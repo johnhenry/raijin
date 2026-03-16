@@ -1,0 +1,25 @@
+{
+  "name": "raijin",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Browser-native mesh rollup framework. Build sovereign rollups where the users ARE the validators.",
+  "keywords": ["rollup", "mesh", "p2p", "consensus", "pbft", "browser", "ethereum", "l2"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/johnhenry/raijin"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "turbo": "^2",
+    "typescript": "^5.7",
+    "tsup": "^8",
+    "vitest": "^3"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

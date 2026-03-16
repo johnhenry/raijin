@@ -1,0 +1,28 @@
+{
+  "name": "raijin-core",
+  "version": "0.0.1",
+  "description": "State machine, blocks, and transactions for the Raijin mesh rollup",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.7",
+    "tsup": "^8",
+    "vitest": "^3"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "raijin-consensus",
+  "version": "0.0.1",
+  "description": "PBFT consensus and leader rotation for the Raijin mesh rollup",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "raijin-core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7",
+    "tsup": "^8",
+    "vitest": "^3"
+  }
+}
