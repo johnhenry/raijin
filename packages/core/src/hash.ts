@@ -7,7 +7,7 @@ const encoder = new TextEncoder()
 
 /** SHA-256 hash of arbitrary data. */
 export async function hash(data: Uint8Array): Promise<Uint8Array> {
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', data)
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', data as BufferSource)
   return new Uint8Array(digest)
 }
 
