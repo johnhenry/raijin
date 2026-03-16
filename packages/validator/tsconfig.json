@@ -4,6 +4,7 @@
     "outDir": "./dist",
     "rootDir": "./src"
   },
-  "include": ["src/**/*"],
-  "references": [{ "path": "../core" }, { "path": "../consensus" }]
+  "include": [
+    "src/**/*"
+  ]
 }
