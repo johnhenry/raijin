@@ -249,14 +249,19 @@ describe('ValidatorNode', () => {
   })
 
   it('onBlockFinalized handler is called on finalization', async () => {
-    let finalized = false
-    node.onBlockFinalized((block, receipts) => {
-      finalized = true
-      expect(block.transactions.length).toBeGreaterThan(0)
-      expect(receipts).toBeDefined()
+    const finalized = new Promise<{ block: any; receipts: any }>((resolve) => {
+      node.onBlockFinalized((block, receipts) => {
+        resolve({ block, receipts })
+      })
     })
 
-    // This test just verifies the handler registration works
-    expect(finalized).toBe(false)
+    await node.submitTransaction(makeTransfer(alice, bob, 100n, 0n))
+    await node.blockProducer.produceBlock()
+
+    // Single-validator PBFT finalizes via microtask after propose() returns
+    const { block, receipts } = await finalized
+    expect(block.transactions.length).toBeGreaterThan(0)
+    expect(receipts).toBeDefined()
+    expect(receipts).toHaveLength(1)
   })
 })
