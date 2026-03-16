@@ -3,7 +3,16 @@
   "private": true,
   "version": "0.0.1",
   "description": "Browser-native mesh rollup framework. Build sovereign rollups where the users ARE the validators.",
-  "keywords": ["rollup", "mesh", "p2p", "consensus", "pbft", "browser", "ethereum", "l2"],
+  "keywords": [
+    "rollup",
+    "mesh",
+    "p2p",
+    "consensus",
+    "pbft",
+    "browser",
+    "ethereum",
+    "l2"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -16,9 +25,10 @@
     "clean": "turbo run clean"
   },
   "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsup": "^8",
     "turbo": "^2",
     "typescript": "^5.7",
-    "tsup": "^8",
     "vitest": "^3"
   },
   "packageManager": "pnpm@9.15.0"
