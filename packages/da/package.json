@@ -1,6 +1,6 @@
 {
   "name": "raijin-da",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Data availability abstraction with pluggable backends for the Raijin mesh rollup",
   "type": "module",
   "main": "./dist/index.js",

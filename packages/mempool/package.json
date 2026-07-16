@@ -1,6 +1,6 @@
 {
   "name": "raijin-mempool",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Transaction mempool with fee-based ordering for the Raijin mesh rollup",
   "type": "module",
   "main": "./dist/index.js",

@@ -1,6 +1,6 @@
 {
   "name": "raijin-sdk",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Developer-facing client API for the Raijin mesh rollup",
   "type": "module",
   "main": "./dist/index.js",

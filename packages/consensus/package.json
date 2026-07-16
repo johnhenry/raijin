@@ -1,6 +1,6 @@
 {
   "name": "raijin-consensus",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "PBFT consensus and leader rotation for the Raijin mesh rollup",
   "type": "module",
   "main": "./dist/index.js",

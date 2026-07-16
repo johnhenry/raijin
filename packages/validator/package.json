@@ -1,6 +1,6 @@
 {
   "name": "raijin-validator",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Composition root wiring core, consensus, and mempool into a runnable validator node",
   "type": "module",
   "main": "./dist/index.js",
