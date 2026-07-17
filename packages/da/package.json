@@ -1,6 +1,6 @@
 {
   "name": "raijin-da",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Data availability abstraction with pluggable backends for the Raijin mesh rollup",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,7 +11,9 @@
       "types": "./dist/index.d.ts"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
