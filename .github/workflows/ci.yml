@@ -28,3 +28,10 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      # Smoke-runs the numbered examples. All of them are single-node by
+      # design (deterministic); multi-node scenarios live in the private
+      # raijin-test-harness package and are excluded from this step because
+      # they are timing-sensitive. See examples/README.md.
+      - name: Examples smoke test
+        run: npm run examples

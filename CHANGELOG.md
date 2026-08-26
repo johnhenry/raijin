@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased — documentation overhaul + runnable examples (2026-08-25)
+
+Documentation only, plus example scripts and a CI smoke step — no library
+source changes.
+
+- **All six per-package READMEs rewritten** from provenance-only stubs into
+  real API documentation: full export surface with signatures, quick starts,
+  and the sharp edges up front (PBFT quorum = 1 below 4 validators; the two
+  unrelated `Mempool` classes in `raijin-mempool` vs `raijin-validator`; the
+  8-byte fee convention colliding with the tx-type byte; what a
+  `DACommitment` does and doesn't prove; `encode()`'s optional-fflate
+  dependency; zeroed `stateRoot`/`receiptRoot` in produced headers). The
+  provenance notes are kept, with the stale "publish.yml now uses pnpm
+  publish" line updated to reflect the npm-workspaces conversion.
+- **Root README**: new section documenting the internal `raijin-test-harness`
+  package (what it provides, why it stays unpublished) and a pointer to the
+  new examples.
+- **`examples/`**: seven numbered, self-checking walkthroughs
+  (`01-hashing-merkle` … `07-sdk-end-to-end`) with an `examples/README.md`.
+  Root scripts `example:01`–`example:07` run them individually and
+  `examples` runs the loop. All are single-node by design so they're
+  deterministic; multi-node scenarios remain in `raijin-test-harness` and
+  are excluded on purpose (documented in `examples/README.md`).
+- **CI**: `.github/workflows/ci.yml` gains an "Examples smoke test" step
+  running `npm run examples` after build/test/typecheck.
+
 ## Unreleased — npm workspaces + Turborepo (2026-08-25)
 
 Converts the monorepo's package manager from pnpm to plain `npm` workspaces,
