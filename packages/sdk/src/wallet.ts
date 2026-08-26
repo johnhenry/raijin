@@ -7,8 +7,8 @@
  * fall back to a polyfill or use ECDSA P-256 keys.
  */
 
-import type { Transaction, TransactionSigner } from 'raijin-core'
-import { encodeTx } from 'raijin-core'
+import type { Transaction, TransactionSigner } from '@johnhenry/raijin-core'
+import { encodeTx } from '@johnhenry/raijin-core'
 
 export interface BuildTxOptions {
   to: Uint8Array | null

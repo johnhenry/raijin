@@ -3,7 +3,7 @@
  * same chain (same latest block height and state root).
  */
 
-import { toHex } from 'raijin-core'
+import { toHex } from '@johnhenry/raijin-core'
 import type { RaijinTestNode } from '../nodes/raijin-test-node.js'
 import type { Checker, CheckResult } from '../orchestrator.js'
 

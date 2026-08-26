@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { LocalDA } from '../src/local.js'
-import { hash, equal, toHex } from 'raijin-core'
+import { hash, equal, toHex } from '@johnhenry/raijin-core'
 
 const encoder = new TextEncoder()
 

@@ -1,5 +1,5 @@
 /**
- * raijin-da — Data availability abstraction with pluggable backends.
+ * @johnhenry/raijin-da — Data availability abstraction with pluggable backends.
  *
  * Provides a uniform DALayer interface for submitting, retrieving, and
  * verifying data across different DA backends:

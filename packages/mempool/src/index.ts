@@ -1,5 +1,5 @@
 /**
- * raijin-mempool — Transaction mempool with fee-based ordering for the Raijin mesh rollup.
+ * @johnhenry/raijin-mempool — Transaction mempool with fee-based ordering for the Raijin mesh rollup.
  */
 
 export { Mempool } from './mempool.js'

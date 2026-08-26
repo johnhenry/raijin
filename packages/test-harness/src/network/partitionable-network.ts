@@ -6,7 +6,7 @@
  * peer handlers stay registered; only message delivery is blocked.
  */
 
-import type { NetworkTransport, ConsensusMessage } from 'raijin-consensus'
+import type { NetworkTransport, ConsensusMessage } from '@johnhenry/raijin-consensus'
 import { SeededPRNG } from './seeded-prng.js'
 
 type Handler = (from: Uint8Array, msg: ConsensusMessage) => Promise<void> | void

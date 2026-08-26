@@ -15,13 +15,18 @@ Think of it as the OP Stack, but for browsers.
 
 | Package | Description |
 |---------|-------------|
-| `raijin-core` | State machine, blocks, transactions, Merkle roots |
-| `raijin-consensus` | PBFT consensus engine with leader rotation and view changes |
-| `raijin-mempool` | Transaction pool with fee-based ordering and eviction |
-| `raijin-da` | Data availability abstraction (Celestia, ETH blobs) |
-| `raijin-validator` | Composition root wiring core + consensus + mempool |
-| `raijin-sdk` | Developer-facing client API |
-| `raijin-test-harness` | Multi-validator integration test utilities |
+| [`@johnhenry/raijin-core`](packages/core) | State machine, blocks, transactions, Merkle roots |
+| [`@johnhenry/raijin-consensus`](packages/consensus) | PBFT consensus engine with leader rotation and view changes |
+| [`@johnhenry/raijin-mempool`](packages/mempool) | Transaction pool with fee-based ordering and eviction |
+| [`@johnhenry/raijin-da`](packages/da) | Data availability abstraction (Celestia, ETH blobs) |
+| [`@johnhenry/raijin-validator`](packages/validator) | Composition root wiring core + consensus + mempool |
+| [`@johnhenry/raijin-sdk`](packages/sdk) | Developer-facing client API |
+| `raijin-test-harness` | Multi-validator integration test utilities (internal, unpublished) |
+
+> **Provenance:** the six publishable packages above were previously
+> published unscoped (`raijin-core`, `raijin-consensus`, etc.) and now live
+> under the `@johnhenry` npm scope, restarting at `0.0.0`. See
+> [CHANGELOG.md](CHANGELOG.md) for exact prior versions per package.
 
 ## Quick Start
 

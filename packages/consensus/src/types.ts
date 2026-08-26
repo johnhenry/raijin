@@ -2,7 +2,7 @@
  * Consensus types for Raijin PBFT.
  */
 
-import type { Block } from 'raijin-core'
+import type { Block } from '@johnhenry/raijin-core'
 
 // ── Network transport interface ───────────────────────────────────────
 

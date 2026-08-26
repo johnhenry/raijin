@@ -3,8 +3,8 @@
  * Holds unconfirmed transactions until they are included in a block.
  */
 
-import type { Transaction } from 'raijin-core'
-import { hash, encodeTxSigned, toHex } from 'raijin-core'
+import type { Transaction } from '@johnhenry/raijin-core'
+import { hash, encodeTxSigned, toHex } from '@johnhenry/raijin-core'
 
 export class Mempool {
   #pending = new Map<string, Transaction>()

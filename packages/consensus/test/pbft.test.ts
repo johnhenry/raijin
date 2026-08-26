@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 
-import { StateMachine, InMemoryStateStore, type Block } from 'raijin-core'
+import { StateMachine, InMemoryStateStore, type Block } from '@johnhenry/raijin-core'
 import { PBFTConsensus, ValidatorSet, PBFTPhase } from '../src/index.js'
 import { MockNetwork, DeterministicNetwork, MockTimer, mockVerifier, mockSign, makeTestKey } from './helpers.js'
 

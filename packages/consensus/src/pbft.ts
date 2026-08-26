@@ -12,8 +12,8 @@
  * to the next leader.
  */
 
-import type { Block, StateMachine, TransactionReceipt } from 'raijin-core'
-import { hash, encodeTx, equal, toHex } from 'raijin-core'
+import type { Block, StateMachine, TransactionReceipt } from '@johnhenry/raijin-core'
+import { hash, encodeTx, equal, toHex } from '@johnhenry/raijin-core'
 import { ValidatorSet } from './validator-set.js'
 import type {
   NetworkTransport,

@@ -1,7 +1,7 @@
 /**
- * raijin-sdk — Developer-facing client API for the Raijin mesh rollup.
+ * @johnhenry/raijin-sdk — Developer-facing client API for the Raijin mesh rollup.
  *
- * Depends on raijin-core for types and encoding.
+ * Depends on @johnhenry/raijin-core for types and encoding.
  */
 
 export { RaijinClient } from './client.js'

@@ -7,5 +7,5 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   target: 'es2022',
-  external: ['raijin-core'],
+  external: ['@johnhenry/raijin-core'],
 })

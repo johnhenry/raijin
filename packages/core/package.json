@@ -1,7 +1,13 @@
 {
-  "name": "raijin-core",
-  "version": "0.0.1",
+  "name": "@johnhenry/raijin-core",
+  "version": "0.0.0",
   "description": "State machine, blocks, and transactions for the Raijin mesh rollup",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/johnhenry/raijin.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/johnhenry/raijin#readme",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
