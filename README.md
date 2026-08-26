@@ -1,5 +1,7 @@
 # Raijin
 
+Full documentation: [opensource.johnhenry.me/raijin](https://opensource.johnhenry.me/raijin/)
+
 A browser-native mesh rollup framework. Build sovereign rollups where
 the users ARE the validators.
 
