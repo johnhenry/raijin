@@ -1,5 +1,5 @@
 /**
- * raijin-consensus — PBFT consensus and leader rotation for the Raijin mesh rollup.
+ * @johnhenry/raijin-consensus — PBFT consensus and leader rotation for the Raijin mesh rollup.
  *
  * Implements a simplified Practical Byzantine Fault Tolerance protocol
  * with rotating leader selection and view changes for leader failure.

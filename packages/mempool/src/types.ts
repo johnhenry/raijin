@@ -2,7 +2,7 @@
  * Mempool types for Raijin.
  */
 
-import type { Transaction } from 'raijin-core'
+import type { Transaction } from '@johnhenry/raijin-core'
 
 /** Transport for gossiping transactions to peers. */
 export interface GossipTransport {

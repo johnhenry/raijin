@@ -5,7 +5,7 @@
  * Uses globalThis.crypto.subtle for SHA-256 hashing (works in browser + Node).
  */
 
-import { hash, equal, toHex } from 'raijin-core'
+import { hash, equal, toHex } from '@johnhenry/raijin-core'
 import type { DALayer, DACommitment } from './types.js'
 
 export class LocalDA implements DALayer {

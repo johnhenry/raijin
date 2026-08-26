@@ -5,8 +5,8 @@
  * orders by fee for block building, and evicts lowest-fee transactions when full.
  */
 
-import type { Transaction } from 'raijin-core'
-import { toHex } from 'raijin-core'
+import type { Transaction } from '@johnhenry/raijin-core'
+import { toHex } from '@johnhenry/raijin-core'
 import type { MempoolConfig, MempoolEvents, FeeExtractor, GossipTransport, TransactionVerifier } from './types.js'
 import { defaultFeeExtractor, orderByFee } from './ordering.js'
 

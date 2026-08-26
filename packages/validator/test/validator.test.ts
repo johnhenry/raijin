@@ -5,8 +5,8 @@ import {
   encodeAccount,
   type Transaction,
   type SignatureVerifier,
-} from 'raijin-core'
-import type { NetworkTransport, ConsensusMessage, ConsensusTimer, TimerHandle } from 'raijin-consensus'
+} from '@johnhenry/raijin-core'
+import type { NetworkTransport, ConsensusMessage, ConsensusTimer, TimerHandle } from '@johnhenry/raijin-consensus'
 import { ValidatorNode } from '../src/validator.js'
 import { Mempool } from '../src/mempool.js'
 import { BlockProducer } from '../src/block-producer.js'

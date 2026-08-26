@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import type { Transaction, Block, Account, TransactionReceipt } from 'raijin-core'
-import { TransactionType } from 'raijin-core'
+import type { Transaction, Block, Account, TransactionReceipt } from '@johnhenry/raijin-core'
+import { TransactionType } from '@johnhenry/raijin-core'
 import { RaijinClient, type ClientTransport } from '../src/client.js'
 
 // ── Helpers ──

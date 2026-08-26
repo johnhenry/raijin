@@ -1,7 +1,13 @@
 {
-  "name": "raijin-consensus",
-  "version": "0.0.3",
+  "name": "@johnhenry/raijin-consensus",
+  "version": "0.0.0",
   "description": "PBFT consensus and leader rotation for the Raijin mesh rollup",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/johnhenry/raijin.git",
+    "directory": "packages/consensus"
+  },
+  "homepage": "https://github.com/johnhenry/raijin#readme",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -23,7 +29,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "raijin-core": "workspace:*"
+    "@johnhenry/raijin-core": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7",

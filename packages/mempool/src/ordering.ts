@@ -4,7 +4,7 @@
  * Sorts transactions by fee (highest first), breaking ties by nonce (lowest first).
  */
 
-import type { Transaction } from 'raijin-core'
+import type { Transaction } from '@johnhenry/raijin-core'
 import type { FeeExtractor } from './types.js'
 
 /** Default fee extractor: uses the `data` field's first 8 bytes as a big-endian bigint fee.

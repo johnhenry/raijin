@@ -3,9 +3,9 @@
  * and proposes them via consensus.
  */
 
-import type { Block, Transaction } from 'raijin-core'
-import { hash, merkleRoot, encodeTxSigned } from 'raijin-core'
-import type { PBFTConsensus } from 'raijin-consensus'
+import type { Block, Transaction } from '@johnhenry/raijin-core'
+import { hash, merkleRoot, encodeTxSigned } from '@johnhenry/raijin-core'
+import type { PBFTConsensus } from '@johnhenry/raijin-consensus'
 import type { Mempool } from './mempool.js'
 
 export interface BlockProducerConfig {

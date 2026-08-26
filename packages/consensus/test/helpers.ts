@@ -3,7 +3,7 @@
  */
 
 import type { NetworkTransport, ConsensusMessage, ConsensusTimer, TimerHandle } from '../src/types.js'
-import type { SignatureVerifier } from 'raijin-core'
+import type { SignatureVerifier } from '@johnhenry/raijin-core'
 
 /** In-memory transport that connects multiple peers. Tracks pending async work. */
 export class MockNetwork {

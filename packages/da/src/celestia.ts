@@ -7,7 +7,7 @@
  * API reference: https://docs.celestia.org/developers/node-api
  */
 
-import { hash, equal, toHex, fromHex } from 'raijin-core'
+import { hash, equal, toHex, fromHex } from '@johnhenry/raijin-core'
 import type { DALayer, DACommitment } from './types.js'
 
 export interface CelestiaDAOptions {

@@ -3,7 +3,7 @@
  * the same height have the same block (no forks).
  */
 
-import { toHex } from 'raijin-core'
+import { toHex } from '@johnhenry/raijin-core'
 import type { RaijinTestNode } from '../nodes/raijin-test-node.js'
 import type { Checker, CheckResult } from '../orchestrator.js'
 

@@ -6,7 +6,7 @@
  * and start them. This ensures every node sees the same validator set.
  */
 
-import { toHex } from 'raijin-core'
+import { toHex } from '@johnhenry/raijin-core'
 import {
   MockTimer,
   mockSign,

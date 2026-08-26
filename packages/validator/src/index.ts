@@ -1,8 +1,8 @@
 /**
- * raijin-validator — Composition root wiring core, consensus, and mempool
+ * @johnhenry/raijin-validator — Composition root wiring core, consensus, and mempool
  * into a runnable validator node.
  *
- * Depends on raijin-core and raijin-consensus.
+ * Depends on @johnhenry/raijin-core and @johnhenry/raijin-consensus.
  */
 
 export { ValidatorNode } from './validator.js'

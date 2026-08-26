@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.0.0 — npm scope migration (2026-08-25)
+
+All six publishable packages move into the `@johnhenry` npm scope and
+restart at `0.0.0` (a new address is a new era). This is a rename + CI fix
+only — no source changes.
+
+| New name | Old name | Last unscoped version(s) |
+|---|---|---|
+| `@johnhenry/raijin-core` | `raijin-core` | `0.0.1` only — published 2026-03-15 as part of the `v0.1.0` initial release; never needed a republish because it has no internal `workspace:*` dependency to leak |
+| `@johnhenry/raijin-consensus` | `raijin-consensus` | `0.0.1` (2026-03-15) → `0.0.2` (2026-07-16, broken, unpublished — see below) → `0.0.3` (2026-07-16, corrected, last published) |
+| `@johnhenry/raijin-mempool` | `raijin-mempool` | same history as `raijin-consensus` |
+| `@johnhenry/raijin-da` | `raijin-da` | same history as `raijin-consensus` |
+| `@johnhenry/raijin-validator` | `raijin-validator` | same history as `raijin-consensus` |
+| `@johnhenry/raijin-sdk` | `raijin-sdk` | same history as `raijin-consensus` |
+
+`raijin-test-harness` is unaffected: it stays unscoped and unpublished
+(internal integration-test utilities only). Its internal dependencies now
+point at the renamed `@johnhenry/raijin-*` packages via `workspace:*`, same
+as before.
+
+This migration also fixes, for real, the bug that produced the `0.0.2` →
+`0.0.3` republish documented below: `.github/workflows/publish.yml`
+published with plain `npm publish` in a loop over `packages/*`, which does
+NOT rewrite `workspace:*` protocol specifiers into resolved versions before
+publishing — the same defect that made the original `0.0.1` releases (and
+then `0.0.2`) uninstallable outside this workspace with
+`EUNSUPPORTEDPROTOCOL`. The `0.0.3` releases only worked because they were
+published by hand with `pnpm publish` as a workaround. The workflow now runs
+`pnpm --filter <pkg> publish --access public --no-git-checks` per package
+instead, so this can't regress again on the next scoped release. The
+workflow's `|| true` around the publish loop and `continue-on-error: true`
+on the test step have also been removed — a publish gate that can't fail on
+broken tests or a failed publish isn't a gate.
+
+CI's Node version and the packages' declared `engines.node` are also
+reconciled: CI pinned Node 22 while `engines.node` required `>=24.0.0` (a
+gap opened in March 2026, commit `4f9ef5d`, to work around a Vitest
+incompatibility that was never revisited). Re-tested on Node 24.9.0 as part
+of this migration: install, build, all 134 tests, and typecheck are clean —
+the original incompatibility no longer reproduces — so CI now runs Node 24,
+matching `engines`.
+
 ## 0.0.2 — raijin-consensus, raijin-mempool, raijin-da, raijin-sdk, raijin-validator (2026-07-16)
 
 Fixes a real installability bug found while wiring `raijin-consensus` into

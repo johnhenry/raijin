@@ -10,9 +10,9 @@ import {
   type Transaction,
   type StateStore,
   type Block,
-} from 'raijin-core'
-import type { ConsensusTimer, NetworkTransport } from 'raijin-consensus'
-import { ValidatorNode } from 'raijin-validator'
+} from '@johnhenry/raijin-core'
+import type { ConsensusTimer, NetworkTransport } from '@johnhenry/raijin-consensus'
+import { ValidatorNode } from '@johnhenry/raijin-validator'
 
 const encoder = new TextEncoder()
 

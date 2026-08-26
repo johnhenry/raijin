@@ -37,7 +37,7 @@
  * ```
  */
 
-import { hash, equal } from 'raijin-core'
+import { hash, equal } from '@johnhenry/raijin-core'
 import type { DALayer, DACommitment } from './types.js'
 
 export interface EthBlobDAOptions {

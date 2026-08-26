@@ -8,7 +8,7 @@ import type {
   Block,
   Account,
   TransactionReceipt,
-} from 'raijin-core'
+} from '@johnhenry/raijin-core'
 
 // ── Transport interface ──────────────────────────────────────────────
 

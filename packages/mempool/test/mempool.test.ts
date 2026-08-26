@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import type { Transaction } from 'raijin-core'
+import type { Transaction } from '@johnhenry/raijin-core'
 import { Mempool } from '../src/mempool.js'
 import { orderByFee, defaultFeeExtractor } from '../src/ordering.js'
 import type { GossipTransport, TransactionVerifier } from '../src/types.js'

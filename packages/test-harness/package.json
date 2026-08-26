@@ -7,9 +7,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "raijin-core": "workspace:*",
-    "raijin-consensus": "workspace:*",
-    "raijin-validator": "workspace:*"
+    "@johnhenry/raijin-core": "workspace:*",
+    "@johnhenry/raijin-consensus": "workspace:*",
+    "@johnhenry/raijin-validator": "workspace:*"
   },
   "devDependencies": {
     "vitest": "^3",

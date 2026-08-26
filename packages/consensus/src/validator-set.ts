@@ -2,7 +2,7 @@
  * Validator set management with deterministic leader rotation.
  */
 
-import { toHex } from 'raijin-core'
+import { toHex } from '@johnhenry/raijin-core'
 
 export class ValidatorSet {
   #validators: Uint8Array[]

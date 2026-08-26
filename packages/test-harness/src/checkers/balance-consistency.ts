@@ -3,7 +3,7 @@
  * is the same across all nodes.
  */
 
-import { toHex } from 'raijin-core'
+import { toHex } from '@johnhenry/raijin-core'
 import type { RaijinTestNode } from '../nodes/raijin-test-node.js'
 import type { Checker, CheckResult } from '../orchestrator.js'
 

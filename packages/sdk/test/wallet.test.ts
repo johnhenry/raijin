@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { encodeTx } from 'raijin-core'
+import { encodeTx } from '@johnhenry/raijin-core'
 import { Wallet } from '../src/wallet.js'
 
 // ── Tests ──

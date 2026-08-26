@@ -9,14 +9,14 @@ import type {
   TransactionReceipt,
   StateStore,
   SignatureVerifier,
-} from 'raijin-core'
-import { StateMachine } from 'raijin-core'
+} from '@johnhenry/raijin-core'
+import { StateMachine } from '@johnhenry/raijin-core'
 import {
   PBFTConsensus,
   ValidatorSet,
   type NetworkTransport,
   type ConsensusTimer,
-} from 'raijin-consensus'
+} from '@johnhenry/raijin-consensus'
 import { Mempool } from './mempool.js'
 import { BlockProducer } from './block-producer.js'
 

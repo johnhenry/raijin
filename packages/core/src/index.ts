@@ -1,5 +1,5 @@
 /**
- * raijin-core — State machine, blocks, and transactions for the Raijin mesh rollup.
+ * @johnhenry/raijin-core — State machine, blocks, and transactions for the Raijin mesh rollup.
  *
  * Zero external dependencies. Uses only globalThis.crypto.subtle.
  * Works in browser and Node.js.
