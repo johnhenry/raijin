@@ -29,8 +29,8 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@johnhenry/raijin-core": "workspace:*",
-    "@johnhenry/raijin-consensus": "workspace:*"
+    "@johnhenry/raijin-core": "^0.0.0",
+    "@johnhenry/raijin-consensus": "^0.0.0"
   },
   "devDependencies": {
     "typescript": "^5.7",

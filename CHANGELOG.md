@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased — npm workspaces + Turborepo (2026-08-25)
+
+Converts the monorepo's package manager from pnpm to plain `npm` workspaces,
+standardizing on the same tooling as the rest of the `@johnhenry` family
+(matching the `ai.matey` precedent). Turborepo (`turbo.json`) is unchanged —
+it already orchestrated `build`/`test`/`typecheck`/`clean` and needed no
+edits, since Turborepo's task graph is package-manager-agnostic and resolves
+npm workspace `name`-based linking the same way it resolved pnpm's.
+
+- `pnpm-workspace.yaml` and `pnpm-lock.yaml` removed; the `packages/*` glob
+  moved into root `package.json`'s new `workspaces` field. `package-lock.json`
+  is now the committed lockfile.
+- Every internal `"workspace:*"` dependency (pnpm's protocol, with no npm
+  equivalent) became a real semver range, `^0.0.0`, matching only the
+  packages' current `0.0.0` version per the family's version-restart
+  convention. This also means the `workspace:*`-rewrite bug documented below
+  (the reason `0.0.2` had to be republished as `0.0.3`) cannot recur under
+  npm — there is no protocol string left to forget to rewrite.
+- `packageManager: "pnpm@9.15.0"` replaced with `"npm@10.0.0"`, matching
+  `ai.matey`'s root manifest. Turborepo 2.x also requires this (or
+  `devEngines.packageManager`) to resolve the workspace at all — `turbo run
+  build` fails outright with "Could not resolve workspace" if it's absent.
+- `raijin-test-harness` marked `"private": true` — it was already excluded
+  from the old per-package publish loop by not being named in it, but
+  `npm publish --workspaces` publishes every non-private workspace member,
+  so it now needs the flag explicitly to stay unpublished.
+- `.github/workflows/ci.yml` and `.github/workflows/publish.yml`: dropped
+  `pnpm/action-setup`, `pnpm install --frozen-lockfile` → `npm ci`,
+  `pnpm build`/`test`/`typecheck` → `npm run build`/`test`/`typecheck`
+  (both already ran through root scripts that call `turbo run ...`, so no
+  script content changed, only the invoking package manager). `publish.yml`'s
+  per-package `pnpm --filter <pkg> publish --access public --no-git-checks`
+  loop replaced with a single `npm publish --workspaces --access public`,
+  which publishes all 6 scoped packages and skips `raijin-test-harness`
+  (private). `actions/setup-node` gained `cache: 'npm'` — safe here since CI
+  runs on `ubuntu-latest`, not self-hosted runners.
+- README's install/build/test/typecheck/clean examples updated to their
+  `npm` equivalents.
+
 ## 0.0.0 — npm scope migration (2026-08-25)
 
 All six publishable packages move into the `@johnhenry` npm scope and

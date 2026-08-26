@@ -18,27 +18,21 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-
-      - uses: pnpm/action-setup@v4
+          cache: 'npm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: npm ci
 
       - name: Build
-        run: pnpm build
+        run: npm run build
 
       - name: Test
-        run: pnpm test
+        run: npm run test
 
       - name: Typecheck
-        run: pnpm typecheck
+        run: npm run typecheck
 
       - name: Publish packages
-        run: |
-          set -e
-          for pkg in core consensus mempool da validator sdk; do
-            echo "Publishing @johnhenry/raijin-$pkg..."
-            pnpm --filter "@johnhenry/raijin-$pkg" publish --access public --no-git-checks
-          done
+        run: npm publish --workspaces --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
