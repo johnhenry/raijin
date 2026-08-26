@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import {
   InMemoryStateStore,
   encodeAccount,
-  encodeTx,
+  encodeTxSigned,
   hash,
   equal,
   toHex,
@@ -64,7 +64,9 @@ node.start()
 // In a real deployment this is the network boundary (HTTP/WebRTC/…).
 const transport = {
   async submitTransaction(tx) {
-    const wantHash = await hash(encodeTx(tx))
+    // Receipt txHash is the canonical (signed) tx identifier — matches
+    // the hash used for txRoot leaves and mempool dedup keys.
+    const wantHash = await hash(encodeTxSigned(tx))
     const receiptPromise = new Promise((resolve) => {
       node.onBlockFinalized((_block, receipts) => {
         const r = receipts.find((r) => equal(r.txHash, wantHash))
@@ -114,12 +116,14 @@ const block1 = await client.getBlock(1n)
 assert.ok(block1)
 assert.equal(await client.getBlock(99n), null)
 
-// A tampered transaction fails signature verification → revert receipt
+// A tampered transaction fails signature verification. The real mempool
+// (@johnhenry/raijin-mempool) verifies signatures at submission time —
+// stronger than catching it later at execution: the bad tx never makes
+// it into a block at all.
 const evil = await userWallet.buildTx({ to: merchant, value: 1n, nonce: 1n })
 evil.value = 999n // mutate after signing
-const evilReceipt = await client.submitTransaction(evil)
-assert.equal(evilReceipt.status, 'revert')
-console.log('tampered tx:', evilReceipt.status, '—', evilReceipt.revertReason)
+await assert.rejects(() => client.submitTransaction(evil), /rejected by mempool/)
+console.log('tampered tx: rejected by mempool before ever reaching a block')
 
 unsub()
 node.stop()

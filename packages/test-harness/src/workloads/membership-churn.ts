@@ -59,17 +59,11 @@ export class MembershipChurnWorkload implements Workload {
             }
           }
         } else if (ev.action === 'restart') {
+          // orch.restartNode() seeds the restarted node's entire state
+          // (balances, nonces, everything) from a live peer before it
+          // rejoins consensus — no manual re-funding needed here anymore.
+          // (Manually re-funding on top of that would double-count balances.)
           orch.restartNode(ev.nodeId)
-          // Re-fund the restarted node with current balances from a surviving node
-          const survivor = Array.from(orch.nodes.values()).find(n => n.running && n.id !== ev.nodeId)
-          if (survivor) {
-            for (const key of orch.validatorKeys) {
-              const acct = await survivor.node.stateMachine.getAccount(key)
-              if (acct.balance > 0n) {
-                await orch.nodes.get(ev.nodeId)!.fund(key, acct.balance)
-              }
-            }
-          }
         }
         eventIdx++
       }

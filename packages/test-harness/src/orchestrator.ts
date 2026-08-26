@@ -128,8 +128,18 @@ export class TestOrchestrator {
   }
 
   /**
-   * Restart a crashed node with a fresh ValidatorNode but same key.
-   * State is NOT preserved (fresh store). Caller must re-fund if needed.
+   * Restart a crashed node with a fresh ValidatorNode, same key.
+   *
+   * Its state store is seeded from a currently-running peer before it
+   * rejoins consensus. Without this, a restarted node would start applying
+   * new blocks against an EMPTY state while every other node has already
+   * applied all prior blocks — deterministic execution then guarantees it
+   * computes a *different* state root than everyone else for the very next
+   * block, which is exactly the kind of divergence NoForkChecker exists to
+   * catch (and, prior to the stateRoot fix, could never actually detect,
+   * since every block's state root was unconditionally zero). Real
+   * validators need a real state-sync protocol before safely rejoining;
+   * this peer-copy is the test harness's minimal stand-in for that.
    */
   restartNode(id: string): void {
     const key = this.#nodeKeys.get(id)
@@ -146,6 +156,12 @@ export class TestOrchestrator {
       validators: [...this.#validators],
       blockTime: 2000,
     })
+
+    const peer = [...this.nodes.values()].find((n) => n.running)
+    if (peer) {
+      newNode.store.importData(peer.store.exportData())
+    }
+
     this.nodes.set(id, newNode)
     newNode.start()
     this.events.record(id, 'lifecycle', 'node-restarted', {})
@@ -159,20 +175,37 @@ export class TestOrchestrator {
 
   /**
    * Drain the network fully, yielding between passes to let fire-and-forget
-   * async chains (PBFT signing, applyBlock) complete and enqueue their
-   * outbound messages. Uses microtask yields, not wall-clock delays.
+   * async chains (PBFT signing, hashing, applyBlock) complete and enqueue
+   * their outbound messages. Uses macrotask yields, not wall-clock delays.
+   *
+   * Some of these chains are triggered directly by a timer firing (e.g.
+   * PBFTConsensus#requestViewChange, spawned fire-and-forget from the view
+   * timer callback) rather than by delivering a queued message — so on the
+   * very first pass, right after the timer fires, the queue can still be
+   * completely empty even though a broadcast is imminent once the pending
+   * `hash()`/`sign()` promises resolve. A single empty double-check isn't
+   * enough evidence that nothing is coming, so we require several
+   * consecutive idle passes (not just one) before concluding the network
+   * has actually quiesced.
    */
-  async drainFully(maxPasses = 30): Promise<number> {
+  async drainFully(maxPasses = 30, idleStreakToStop = 4): Promise<number> {
     let total = 0
+    let idleStreak = 0
     for (let i = 0; i < maxPasses; i++) {
       const n = await this.drainAll()
       total += n
-      // Yield to event loop — crypto.subtle.digest() (SHA-256 in PBFT)
-      // is real async I/O, not a microtask. setTimeout(0) lets it complete.
+      // Yield to event loop — crypto.subtle operations (hashing, signing)
+      // are real async I/O, not microtasks. setTimeout(0) lets them complete.
       await new Promise(r => setTimeout(r, 0))
       const n2 = await this.drainAll()
       total += n2
-      if (n === 0 && n2 === 0) break
+
+      if (n === 0 && n2 === 0) {
+        idleStreak++
+        if (idleStreak >= idleStreakToStop) break
+      } else {
+        idleStreak = 0
+      }
     }
     return total
   }

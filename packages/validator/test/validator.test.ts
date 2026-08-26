@@ -7,14 +7,18 @@ import {
   type SignatureVerifier,
 } from '@johnhenry/raijin-core'
 import type { NetworkTransport, ConsensusMessage, ConsensusTimer, TimerHandle } from '@johnhenry/raijin-consensus'
+import { Mempool } from '@johnhenry/raijin-mempool'
 import { ValidatorNode } from '../src/validator.js'
-import { Mempool } from '../src/mempool.js'
 import { BlockProducer } from '../src/block-producer.js'
 
 // ── Mock helpers ──
 
 const alwaysValidVerifier: SignatureVerifier = {
   async verify() { return true },
+}
+
+const alwaysInvalidVerifier: SignatureVerifier = {
+  async verify() { return false },
 }
 
 function makeKey(id: number): Uint8Array {
@@ -100,48 +104,49 @@ class LoopbackTransport implements NetworkTransport {
 const alice = makeKey(1)
 const bob = makeKey(2)
 
-describe('Mempool', () => {
+// The naive, unvalidated per-package Mempool (packages/validator/src/mempool.ts)
+// has been removed — ValidatorNode now uses the real, signature-verified,
+// fee-ordered @johnhenry/raijin-mempool package directly (see validator.ts).
+// Its own extensive test suite lives in packages/mempool/test/mempool.test.ts;
+// these are just a couple of smoke tests confirming the package's actual API.
+describe('Mempool (@johnhenry/raijin-mempool)', () => {
   let mempool: Mempool
 
   beforeEach(() => {
-    mempool = new Mempool(10)
+    mempool = new Mempool({ maxSize: 10, verifier: async () => true })
   })
 
   it('adds and retrieves transactions', async () => {
     const tx = makeTransfer(alice, bob, 100n, 0n)
-    await mempool.add(tx)
+    await mempool.submit(tx)
     expect(mempool.size).toBe(1)
     expect(mempool.pending()).toHaveLength(1)
   })
 
-  it('respects max size', async () => {
-    const pool = new Mempool(2)
-    await pool.add(makeTransfer(alice, bob, 1n, 0n))
-    await pool.add(makeTransfer(alice, bob, 2n, 1n))
-    await expect(pool.add(makeTransfer(alice, bob, 3n, 2n))).rejects.toThrow('Mempool full')
+  it('rejects a tx when full and no lower-fee tx to evict', async () => {
+    const pool = new Mempool({ maxSize: 2, verifier: async () => true })
+    await pool.submit(makeTransfer(alice, bob, 1n, 0n))
+    await pool.submit(makeTransfer(alice, bob, 2n, 1n))
+    // All these txs have the default (zero) fee, so the third can't evict either of the first two.
+    const accepted = await pool.submit(makeTransfer(alice, bob, 3n, 2n))
+    expect(accepted).toBe(false)
+    expect(pool.size).toBe(2)
   })
 
   it('removes transactions after finalization', async () => {
     const tx = makeTransfer(alice, bob, 100n, 0n)
-    await mempool.add(tx)
+    await mempool.submit(tx)
     expect(mempool.size).toBe(1)
-    await mempool.removeBatch([tx])
+    mempool.removeBatch([tx])
     expect(mempool.size).toBe(0)
   })
 
-  it('limits pending retrieval', async () => {
-    await mempool.add(makeTransfer(alice, bob, 1n, 0n))
-    await mempool.add(makeTransfer(alice, bob, 2n, 1n))
-    await mempool.add(makeTransfer(alice, bob, 3n, 2n))
-    expect(mempool.pending(2)).toHaveLength(2)
+  it('limits pendingForProposer retrieval', async () => {
+    await mempool.submit(makeTransfer(alice, bob, 1n, 0n))
+    await mempool.submit(makeTransfer(alice, bob, 2n, 1n))
+    await mempool.submit(makeTransfer(alice, bob, 3n, 2n))
+    expect(mempool.pendingForProposer(2)).toHaveLength(2)
     expect(mempool.pending()).toHaveLength(3)
-  })
-
-  it('clears all transactions', async () => {
-    await mempool.add(makeTransfer(alice, bob, 1n, 0n))
-    await mempool.add(makeTransfer(alice, bob, 2n, 1n))
-    mempool.clear()
-    expect(mempool.size).toBe(0)
   })
 })
 
@@ -199,6 +204,25 @@ describe('ValidatorNode', () => {
     expect(typeof hashHex).toBe('string')
     expect(hashHex.length).toBeGreaterThan(0)
     expect(node.mempool.size).toBe(1)
+  })
+
+  it('rejects a transaction with a bad signature before it enters the mempool', async () => {
+    const badNode = new ValidatorNode({
+      identity: {
+        publicKey: alice,
+        sign: async () => alice,
+        verify: alwaysInvalidVerifier, // every signature check fails
+      },
+      transport: new LoopbackTransport(alice),
+      timer: new MockTimer(),
+      store: new InMemoryStateStore(),
+      blockTime: 1000,
+      validators: [alice],
+    })
+
+    const tx = makeTransfer(alice, bob, 100n, 0n)
+    await expect(badNode.submitTransaction(tx)).rejects.toThrow()
+    expect(badNode.mempool.size).toBe(0)
   })
 
   it('exposes latestBlock as null initially', () => {

@@ -48,6 +48,8 @@ export interface PrepareMessage {
   sequence: bigint
   digest: Uint8Array
   from: Uint8Array
+  /** Signature over `digest`, by `from`. Verified before counting toward quorum. */
+  signature: Uint8Array
 }
 
 export interface CommitMessage {
@@ -64,6 +66,9 @@ export interface ViewChangeMessage {
   newView: bigint
   sequence: bigint
   from: Uint8Array
+  /** Signature over hash(newView, sequence), by `from`. Verified before
+   *  counting toward a NEW-VIEW quorum. */
+  signature: Uint8Array
 }
 
 export interface NewViewMessage {

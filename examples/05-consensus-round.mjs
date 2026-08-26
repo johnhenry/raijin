@@ -44,6 +44,7 @@ const consensus = new PBFTConsensus({
   timer: manualTimer,
   stateMachine,
   sign: async () => new Uint8Array(64), // inject a real signer in production
+  verify: { verify: async () => true }, // inject a real verifier in production (e.g. Ed25519)
 })
 
 const finalized = new Promise((resolve) => {

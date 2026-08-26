@@ -80,4 +80,24 @@ export class InMemoryStateStore implements StateStore {
   get size(): number {
     return this.#data.size
   }
+
+  /** Number of retained snapshots (for tests — asserting no unbounded growth). */
+  get snapshotCount(): number {
+    return this.#snapshots.size
+  }
+
+  /**
+   * Export a deep copy of the raw key→value data. Intended for state
+   * sync/seeding — e.g. a rejoining/restarted node copying a live peer's
+   * state before it starts participating in consensus again, so it doesn't
+   * silently diverge (see `importData`).
+   */
+  exportData(): Map<string, Uint8Array> {
+    return new Map(this.#data)
+  }
+
+  /** Replace this store's contents with previously-exported data (see `exportData`). */
+  importData(data: Map<string, Uint8Array>): void {
+    this.#data = new Map(data)
+  }
 }

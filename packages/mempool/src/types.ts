@@ -28,7 +28,10 @@ export interface MempoolConfig {
   maxSize?: number
   /** Verify transaction signatures. */
   verifier: TransactionVerifier
-  /** Extract fee from a transaction. Default: tx.value (tip). */
+  /** Extract fee from a transaction. Default: reads an 8-byte big-endian
+   *  uint64 from `tx.data[1..9]` (byte 0 is reserved for the tx type byte —
+   *  see `defaultFeeExtractor` in ordering.ts). Falls back to 0n if `data`
+   *  is too short. */
   feeExtractor?: FeeExtractor
   /** Optional gossip transport for propagating transactions. */
   gossip?: GossipTransport

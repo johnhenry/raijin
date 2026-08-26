@@ -4,7 +4,7 @@
  * Zero dependencies.
  */
 
-import type { Transaction, Block, BlockHeader, Account } from './types.js'
+import type { Transaction, Block, BlockHeader, Account, TransactionReceipt } from './types.js'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -116,4 +116,24 @@ export function decodeAccount(data: Uint8Array): Account {
   const [nonce, s2] = decodeBigInt(data, offset); offset += s2
   const [reputation, s3] = decodeBigInt(data, offset); offset += s3
   return { balance, nonce, reputation }
+}
+
+// ── Receipt encoding ────────────────────────────────────────────────────
+
+/** Encode a transaction receipt into deterministic bytes (for receipt-root hashing). */
+export function encodeReceipt(receipt: TransactionReceipt): Uint8Array {
+  const parts: Uint8Array[] = [
+    encodeBytes(receipt.txHash),
+    new Uint8Array([receipt.status === 'success' ? 1 : 0]),
+    encodeBytes(encoder.encode(receipt.revertReason ?? '')),
+    encodeBigInt(BigInt(receipt.index)),
+  ]
+  const totalLen = parts.reduce((sum, p) => sum + p.length, 0)
+  const result = new Uint8Array(totalLen)
+  let pos = 0
+  for (const part of parts) {
+    result.set(part, pos)
+    pos += part.length
+  }
+  return result
 }

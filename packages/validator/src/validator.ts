@@ -10,14 +10,14 @@ import type {
   StateStore,
   SignatureVerifier,
 } from '@johnhenry/raijin-core'
-import { StateMachine } from '@johnhenry/raijin-core'
+import { StateMachine, encodeTx, encodeTxSigned, hash, toHex } from '@johnhenry/raijin-core'
 import {
   PBFTConsensus,
   ValidatorSet,
   type NetworkTransport,
   type ConsensusTimer,
 } from '@johnhenry/raijin-consensus'
-import { Mempool } from './mempool.js'
+import { Mempool } from '@johnhenry/raijin-mempool'
 import { BlockProducer } from './block-producer.js'
 
 export interface ValidatorNodeConfig {
@@ -77,8 +77,15 @@ export class ValidatorNode {
     // Create validator set
     this.#validatorSet = new ValidatorSet(validators)
 
-    // Create mempool
-    this.#mempool = new Mempool(maxMempoolSize)
+    // Create mempool — the real, signature-verified, fee-ordered mempool
+    // (@johnhenry/raijin-mempool), not a naive unvalidated queue. A
+    // transaction's signature is verified against the same SignatureVerifier
+    // used by the state machine, over the same unsigned encoding that's
+    // actually signed.
+    this.#mempool = new Mempool({
+      maxSize: maxMempoolSize,
+      verifier: async (tx) => identity.verify.verify(encodeTx(tx), tx.signature, tx.from),
+    })
 
     // Create consensus engine
     this.#consensus = new PBFTConsensus({
@@ -89,6 +96,7 @@ export class ValidatorNode {
       stateMachine: this.#stateMachine,
       blockTime,
       sign: identity.sign,
+      verify: identity.verify,
     })
 
     // Create block producer
@@ -124,9 +132,17 @@ export class ValidatorNode {
     }
   }
 
-  /** Submit a transaction to the mempool. Returns the tx hash hex. */
+  /**
+   * Submit a transaction to the mempool. Returns the tx hash hex on
+   * acceptance; throws if the mempool rejects it (invalid signature,
+   * duplicate sender+nonce, or pool full with no lower-fee tx to evict).
+   */
   async submitTransaction(tx: Transaction): Promise<string> {
-    return this.#mempool.add(tx)
+    const accepted = await this.#mempool.submit(tx)
+    if (!accepted) {
+      throw new Error('Transaction rejected by mempool (invalid signature, duplicate, or pool full)')
+    }
+    return toHex(await hash(encodeTxSigned(tx)))
   }
 
   /** Register a handler for block finalization events. */
@@ -181,7 +197,7 @@ export class ValidatorNode {
     this.#latestBlock = block
 
     // Remove included transactions from the mempool
-    await this.#mempool.removeBatch(block.transactions)
+    this.#mempool.removeBatch(block.transactions)
 
     // Advance block producer state
     this.#blockProducer.advance(block)

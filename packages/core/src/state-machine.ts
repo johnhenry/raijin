@@ -14,7 +14,7 @@ import type {
 } from './types.js'
 import { TransactionType } from './types.js'
 import { hash, merkleRoot } from './hash.js'
-import { encodeTx, encodeAccount, decodeAccount } from './encoding.js'
+import { encodeTx, encodeTxSigned, encodeAccount, decodeAccount } from './encoding.js'
 
 const EMPTY_ACCOUNT: Account = { balance: 0n, nonce: 0n, reputation: 0n }
 const encoder = new TextEncoder()
@@ -76,7 +76,11 @@ export class StateMachine {
    */
   async applyTransaction(tx: Transaction, index: number): Promise<TransactionReceipt> {
     const txBytes = encodeTx(tx)
-    const txHash = await hash(txBytes)
+    // The canonical transaction identifier includes the signature (matches the
+    // hash used for block txRoot leaves and mempool dedup keys) — see
+    // encodeTxSigned. Signature *verification* below is still over the
+    // unsigned body, since that's what was actually signed.
+    const txHash = await hash(encodeTxSigned(tx))
 
     // 1. Verify signature
     const valid = await this.#verifier.verify(txBytes, tx.signature, tx.from)
@@ -112,19 +116,24 @@ export class StateMachine {
   }
 
   /**
-   * Apply all transactions in a block.
-   * Uses snapshot/revert for atomicity — if any tx fails, the entire block is rolled back.
+   * Apply all transactions in a block, in order.
+   *
+   * NOTE on atomicity: this does NOT take a store-wide snapshot/revert around
+   * the whole block. Each transaction executor already checks preconditions
+   * (signature, nonce, balance/reputation) before mutating any state, so a
+   * failing transaction produces a 'revert' receipt without itself mutating
+   * state — but this is per-transaction isolation, not block-level atomic
+   * rollback. If a later requirement needs "abort the whole block if any tx
+   * fails," that must be implemented explicitly (e.g. by snapshotting before
+   * the loop and calling `#store.revert()` if any receipt reverts), since
+   * `StateStore.snapshot()`/`revert()` are otherwise unused here.
    */
   async applyBlock(block: Block): Promise<TransactionReceipt[]> {
-    const snap = await this.#store.snapshot()
     const receipts: TransactionReceipt[] = []
 
     for (let i = 0; i < block.transactions.length; i++) {
       const receipt = await this.applyTransaction(block.transactions[i], i)
       receipts.push(receipt)
-
-      // If a transaction reverts, we still include it (the receipt records the failure)
-      // but no state changes from that tx are committed (handled per-tx)
     }
 
     return receipts
