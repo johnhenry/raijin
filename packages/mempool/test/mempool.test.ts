@@ -12,11 +12,14 @@ const validVerifier: TransactionVerifier = async () => true
 /** Always-invalid verifier. */
 const invalidVerifier: TransactionVerifier = async () => false
 
-/** Encode a fee as 8-byte big-endian in tx.data. */
-function encodeFee(fee: bigint): Uint8Array {
-  const bytes = new Uint8Array(8)
+/** Encode a fee as an 8-byte big-endian value in tx.data[1..9], leaving
+ *  tx.data[0] free for the tx type byte (matches `defaultFeeExtractor`'s
+ *  convention — see packages/mempool/src/ordering.ts). */
+function encodeFee(fee: bigint, typeByte = 0): Uint8Array {
+  const bytes = new Uint8Array(9)
+  bytes[0] = typeByte
   let val = fee
-  for (let i = 7; i >= 0; i--) {
+  for (let i = 8; i >= 1; i--) {
     bytes[i] = Number(val & 0xffn)
     val >>= 8n
   }
@@ -140,6 +143,28 @@ describe('Mempool', () => {
       const sorted = orderByFee([tx1, tx2], defaultFeeExtractor)
       expect(sorted[0].nonce).toBe(1n)
       expect(sorted[1].nonce).toBe(5n)
+    })
+
+    it('fee bytes do not collide with the tx type byte at data[0]', () => {
+      // A tx that follows the documented fee convention (fee packed into
+      // tx.data) must not corrupt tx.data[0], which StateMachine reads as
+      // the transaction type discriminant.
+      const TRANSFER_TYPE = 0x01
+      const fee = 12345n
+      const tx: Transaction = {
+        from: new Uint8Array(32),
+        nonce: 0n,
+        to: new Uint8Array(32),
+        value: 0n,
+        data: encodeFee(fee, TRANSFER_TYPE),
+        signature: new Uint8Array(64),
+        chainId: 1n,
+      }
+
+      // The type byte survives untouched...
+      expect(tx.data[0]).toBe(TRANSFER_TYPE)
+      // ...and the fee extractor still reads the correct fee.
+      expect(defaultFeeExtractor(tx)).toBe(fee)
     })
   })
 

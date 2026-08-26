@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import {
   InMemoryStateStore,
   encodeAccount,
-  encodeTx,
+  encodeTxSigned,
   hash,
   equal,
   toHex,
@@ -64,7 +64,9 @@ node.start()
 // In a real deployment this is the network boundary (HTTP/WebRTC/…).
 const transport = {
   async submitTransaction(tx) {
-    const wantHash = await hash(encodeTx(tx))
+    // Receipt txHash is the canonical (signed) tx identifier — matches
+    // the hash used for txRoot leaves and mempool dedup keys.
+    const wantHash = await hash(encodeTxSigned(tx))
     const receiptPromise = new Promise((resolve) => {
       node.onBlockFinalized((_block, receipts) => {
         const r = receipts.find((r) => equal(r.txHash, wantHash))

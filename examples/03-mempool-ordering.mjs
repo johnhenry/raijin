@@ -1,10 +1,12 @@
 /**
  * 03 — Mempool fee ordering and eviction (@johnhenry/raijin-mempool)
  *
- * The default fee convention: the FIRST 8 BYTES of tx.data are the fee,
- * big-endian. This collides with the state machine's convention (first
- * data byte = transaction type) — real deployments supply their own
- * FeeExtractor. Here we use the default to show the mechanics.
+ * The default fee convention: 8 BYTES of tx.data, starting at offset 1,
+ * are the fee, big-endian. Byte 0 is left alone — it's reserved for the
+ * state machine's transaction type discriminant — so the default fee
+ * convention and the type byte no longer collide. Real deployments can
+ * still supply their own FeeExtractor. Here we use the default to show
+ * the mechanics.
  *
  * Run: npm run example:03
  */
@@ -12,9 +14,9 @@ import assert from 'node:assert/strict'
 import { Mempool, orderByFee, defaultFeeExtractor } from '@johnhenry/raijin-mempool'
 
 function encodeFee(fee) {
-  const bytes = new Uint8Array(8)
+  const bytes = new Uint8Array(9) // bytes[0] reserved for tx type
   let v = fee
-  for (let i = 7; i >= 0; i--) {
+  for (let i = 8; i >= 1; i--) {
     bytes[i] = Number(v & 0xffn)
     v >>= 8n
   }

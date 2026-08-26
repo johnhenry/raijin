@@ -249,5 +249,30 @@ describe('StateMachine', () => {
       const aliceAccount = await sm.getAccount(alice)
       expect(aliceAccount.balance).toBe(700n)
     })
+
+    it('does not accumulate store snapshots across many blocks (no unbounded memory leak)', async () => {
+      expect(store.snapshotCount).toBe(0)
+
+      for (let i = 0; i < 25; i++) {
+        const block = {
+          header: {
+            number: BigInt(i + 1),
+            parentHash: new Uint8Array(32),
+            stateRoot: new Uint8Array(32),
+            txRoot: new Uint8Array(32),
+            receiptRoot: new Uint8Array(32),
+            timestamp: Date.now(),
+            proposer: alice,
+          },
+          transactions: [makeTransfer(alice, bob, 1n, BigInt(i))],
+          signatures: [],
+        }
+        await sm.applyBlock(block)
+      }
+
+      // applyBlock does not call store.snapshot() — nothing here should
+      // ever grow #snapshots on the underlying store.
+      expect(store.snapshotCount).toBe(0)
+    })
   })
 })

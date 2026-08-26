@@ -39,7 +39,11 @@ export {
   encodeTxSigned,
   encodeAccount,
   decodeAccount,
+  encodeReceipt,
 } from './encoding.js'
+
+// Cryptography
+export { verifyEd25519, ed25519Verifier } from './crypto.js'
 
 // Errors
 export {

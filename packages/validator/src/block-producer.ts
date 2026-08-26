@@ -6,7 +6,7 @@
 import type { Block, Transaction } from '@johnhenry/raijin-core'
 import { hash, merkleRoot, encodeTxSigned } from '@johnhenry/raijin-core'
 import type { PBFTConsensus } from '@johnhenry/raijin-consensus'
-import type { Mempool } from './mempool.js'
+import type { Mempool } from '@johnhenry/raijin-mempool'
 
 export interface BlockProducerConfig {
   /** This validator's public key (32 bytes). */
@@ -38,7 +38,7 @@ export class BlockProducer {
   async produceBlock(): Promise<Block | null> {
     if (!this.#consensus.isLeader) return null
 
-    const txs = this.#mempool.pending(this.#maxTxPerBlock)
+    const txs = this.#mempool.pendingForProposer(this.#maxTxPerBlock)
     if (txs.length === 0) return null
 
     const block = await this.#buildBlock(txs)

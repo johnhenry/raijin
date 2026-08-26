@@ -12,8 +12,8 @@
  * to the next leader.
  */
 
-import type { Block, StateMachine, TransactionReceipt } from '@johnhenry/raijin-core'
-import { hash, encodeTx, equal, toHex } from '@johnhenry/raijin-core'
+import type { Block, StateMachine, TransactionReceipt, SignatureVerifier } from '@johnhenry/raijin-core'
+import { hash, merkleRoot, encodeReceipt, equal, toHex } from '@johnhenry/raijin-core'
 import { ValidatorSet } from './validator-set.js'
 import type {
   NetworkTransport,
@@ -45,6 +45,13 @@ export interface PBFTConfig {
   viewTimeout?: number
   /** Sign a message. */
   sign: (message: Uint8Array) => Promise<Uint8Array>
+  /**
+   * Verify a signature against a message and the claimed signer's public
+   * key. Used to authenticate PREPARE, COMMIT, and VIEW-CHANGE votes before
+   * they're counted toward quorum — without this, any peer that can reach
+   * `#handleMessage` could forge votes on behalf of any validator.
+   */
+  verify: SignatureVerifier
 }
 
 export class PBFTConsensus {
@@ -55,6 +62,7 @@ export class PBFTConsensus {
   #timer: ConsensusTimer
   #stateMachine: StateMachine
   #sign: (message: Uint8Array) => Promise<Uint8Array>
+  #verify: SignatureVerifier
   #blockTime: number
   #viewTimeout: number
 
@@ -67,9 +75,19 @@ export class PBFTConsensus {
   // ── Message collection ──
   #prepares = new Map<string, Set<string>>() // digest_hex → set of validator_hex
   #commits = new Map<string, Set<string>>()  // digest_hex → set of validator_hex
-  #viewChanges = new Map<string, ViewChangeMessage[]>() // newView → messages
+  #viewChanges = new Map<string, Map<string, ViewChangeMessage>>() // newView → (validator_hex → message), deduped by sender
   #pendingBlock: Block | null = null
   #pendingDigest: Uint8Array | null = null
+  /**
+   * Sequence → digest of the last block that reached a PREPARE quorum
+   * ("prepared certificate") at that sequence, across all views. Not
+   * cleared on view change — this is a partial mitigation for the lack of
+   * full prepared-certificate carry-over in NEW-VIEW: it stops a new leader
+   * from getting a *conflicting* block accepted at a sequence that was
+   * already validly prepared, even though it can't yet automatically
+   * re-propose the original block. See tracking issue for full carry-over.
+   */
+  #preparedCert = new Map<string, Uint8Array>()
 
   // ── Timers ──
   #blockTimer: TimerHandle | null = null
@@ -87,6 +105,7 @@ export class PBFTConsensus {
     this.#timer = config.timer
     this.#stateMachine = config.stateMachine
     this.#sign = config.sign
+    this.#verify = config.verify
     this.#blockTime = config.blockTime ?? 2000
     this.#viewTimeout = config.viewTimeout ?? 10000
 
@@ -141,15 +160,17 @@ export class PBFTConsensus {
     this.#transport.broadcast(msg)
 
     // Leader also sends PREPARE so other peers can count it
+    const prepareSignature = await this.#sign(digest)
     const prepare: PrepareMessage = {
       type: 'prepare',
       view: this.#view,
       sequence: this.#sequence,
       digest,
       from: this.#identity,
+      signature: prepareSignature,
     }
     this.#transport.broadcast(prepare)
-    this.#addPrepare(digest, this.#identity)
+    await this.#addPrepare(digest, this.#identity)
 
     // Reset view timer (we're making progress)
     this.#resetViewTimer()
@@ -216,6 +237,14 @@ export class PBFTConsensus {
     const digest = await hash(blockBytes)
     if (!equal(digest, msg.digest)) return
 
+    // Partial view-change safety mitigation: if this sequence was already
+    // validly prepared (2f+1 PREPARE votes) at some prior view, refuse to
+    // accept a *different* block for the same sequence. We can't yet
+    // automatically carry the old block forward, but we must not let a new
+    // leader silently override an already-prepared one. See #doViewChange.
+    const cert = this.#preparedCert.get(msg.sequence.toString())
+    if (cert && !equal(cert, digest)) return
+
     // Accept the proposal
     this.#pendingBlock = msg.block
     this.#pendingDigest = digest
@@ -223,15 +252,17 @@ export class PBFTConsensus {
     this.#phase = PBFTPhase.PrePrepared
 
     // Send PREPARE
+    const signature = await this.#sign(digest)
     const prepare: PrepareMessage = {
       type: 'prepare',
       view: this.#view,
       sequence: this.#sequence,
       digest,
       from: this.#identity,
+      signature,
     }
     this.#transport.broadcast(prepare)
-    this.#addPrepare(digest, this.#identity)
+    await this.#addPrepare(digest, this.#identity)
 
     this.#resetViewTimer()
   }
@@ -240,6 +271,9 @@ export class PBFTConsensus {
     if (msg.view !== this.#view) return
     if (msg.sequence !== this.#sequence) return
 
+    const valid = await this.#verify.verify(msg.digest, msg.signature, from)
+    if (!valid) return
+
     await this.#addPrepare(msg.digest, from)
   }
 
@@ -247,24 +281,60 @@ export class PBFTConsensus {
     if (msg.view !== this.#view) return
     if (msg.sequence !== this.#sequence) return
 
+    const valid = await this.#verify.verify(msg.digest, msg.signature, from)
+    if (!valid) return
+
     await this.#addCommit(msg.digest, from)
   }
 
   async #handleViewChange(from: Uint8Array, msg: ViewChangeMessage): Promise<void> {
+    const digest = this.#viewChangeDigestBytes(msg.newView, msg.sequence)
+    const valid = await this.#verify.verify(digest, msg.signature, from)
+    if (!valid) return
+
     const key = msg.newView.toString()
     if (!this.#viewChanges.has(key)) {
-      this.#viewChanges.set(key, [])
+      this.#viewChanges.set(key, new Map())
     }
-    this.#viewChanges.get(key)!.push(msg)
+    // Dedup by sender: a single validator (Byzantine or just re-broadcasting)
+    // must not be able to count more than once toward the quorum.
+    this.#viewChanges.get(key)!.set(toHex(from), msg)
 
-    // Check if we have enough view-change messages
-    const count = this.#viewChanges.get(key)!.length
+    const count = this.#viewChanges.get(key)!.size
     if (count >= this.#validators.quorumSize()) {
       this.#doViewChange(msg.newView)
     }
   }
 
+  /**
+   * Handle an incoming NEW-VIEW message. NEW-VIEW is not produced by this
+   * implementation today (view changes complete directly once a quorum of
+   * VIEW-CHANGE messages is observed — see #handleViewChange), but the
+   * message type is part of the wire protocol and a malicious or buggy peer
+   * could send one unsolicited. We must not act on it unless it's actually
+   * backed by a real quorum (2f+1) of validly-signed, distinct-sender
+   * VIEW-CHANGE messages agreeing on the claimed view — otherwise a single
+   * validator could force every other node to jump views at will.
+   */
   async #handleNewView(_from: Uint8Array, msg: NewViewMessage): Promise<void> {
+    const seenSenders = new Set<string>()
+
+    for (const vc of msg.viewChanges) {
+      if (vc.newView !== msg.view) continue
+      if (!this.#validators.has(vc.from)) continue
+
+      const hex = toHex(vc.from)
+      if (seenSenders.has(hex)) continue // dedup by sender
+
+      const digest = this.#viewChangeDigestBytes(vc.newView, vc.sequence)
+      const valid = await this.#verify.verify(digest, vc.signature, vc.from)
+      if (!valid) continue
+
+      seenSenders.add(hex)
+    }
+
+    if (seenSenders.size < this.#validators.quorumSize()) return
+
     this.#doViewChange(msg.view)
   }
 
@@ -287,6 +357,11 @@ export class PBFTConsensus {
     if (this.#phase !== PBFTPhase.PrePrepared) return
     this.#phase = PBFTPhase.Prepared
 
+    // Record the prepared certificate for this sequence (see #preparedCert
+    // docs) — this survives view changes so a later view can't silently
+    // override an already-prepared block with a conflicting one.
+    this.#preparedCert.set(this.#sequence.toString(), digest)
+
     // Sign the digest and send COMMIT
     const signature = await this.#sign(digest)
     const commit: CommitMessage = {
@@ -298,7 +373,7 @@ export class PBFTConsensus {
       signature,
     }
     this.#transport.broadcast(commit)
-    this.#addCommit(digest, this.#identity)
+    await this.#addCommit(digest, this.#identity)
   }
 
   async #addCommit(digest: Uint8Array, from: Uint8Array): Promise<void> {
@@ -322,6 +397,20 @@ export class PBFTConsensus {
     // Apply block to state machine
     const receipts = await this.#stateMachine.applyBlock(this.#pendingBlock)
 
+    // The digest agreed upon during PRE-PREPARE/PREPARE/COMMIT was
+    // necessarily computed *before* execution (state root/receipt root
+    // can't be known ahead of running the block) — the header carried
+    // zero-filled placeholders for those fields. Now that we've actually
+    // executed the block, fill in the real values. This doesn't change the
+    // already-agreed digest (nothing re-verifies it after this point); it
+    // only affects the finalized block object used for chain linkage
+    // (BlockProducer#advance reads `header.stateRoot` as the next block's
+    // parentHash) and for fork/convergence detection in the test harness.
+    this.#pendingBlock.header.stateRoot = await this.#stateMachine.stateRoot()
+    this.#pendingBlock.header.receiptRoot = await this.#computeReceiptRoot(receipts)
+
+    const finalizedSequence = this.#sequence
+
     // Notify listeners
     for (const handler of this.#onBlockFinalized) {
       handler(this.#pendingBlock, receipts)
@@ -333,6 +422,9 @@ export class PBFTConsensus {
     this.#pendingDigest = null
     this.#prepares.clear()
     this.#commits.clear()
+    // This sequence is finalized — no future view change can conflict with
+    // it, so the prepared-certificate guard is no longer needed for it.
+    this.#preparedCert.delete(finalizedSequence.toString())
 
     // If we're the leader, schedule next block
     if (this.isLeader) {
@@ -341,22 +433,41 @@ export class PBFTConsensus {
     this.#resetViewTimer()
   }
 
+  /** Merkle root over the block's transaction receipts. */
+  async #computeReceiptRoot(receipts: TransactionReceipt[]): Promise<Uint8Array> {
+    const leaves = await Promise.all(receipts.map((r) => hash(encodeReceipt(r))))
+    return merkleRoot(leaves)
+  }
+
   // ── View changes ────────────────────────────────────────────────────
 
-  #requestViewChange(): void {
+  async #requestViewChange(): Promise<void> {
     const newView = this.#view + 1n
+    const digest = this.#viewChangeDigestBytes(newView, this.#sequence)
+    const signature = await this.#sign(digest)
     const msg: ViewChangeMessage = {
       type: 'view-change',
       newView,
       sequence: this.#sequence,
       from: this.#identity,
+      signature,
     }
     this.#transport.broadcast(msg)
 
     // Also process our own view-change
-    this.#handleViewChange(this.#identity, msg)
+    await this.#handleViewChange(this.#identity, msg)
   }
 
+  /**
+   * Apply a view change. NOTE: this does not carry forward the highest
+   * prepared certificate from the old view (full PBFT view-change requires
+   * the new leader to re-propose any block that reached a PREPARE quorum in
+   * a prior view, at the same sequence). `#preparedCert` is a partial
+   * mitigation — see its docs and `#handlePrePrepare` — that prevents a
+   * *conflicting* re-proposal at an already-prepared sequence, but does not
+   * by itself get the original block re-proposed. Full carry-over is
+   * tracked as follow-up work.
+   */
   #doViewChange(newView: bigint): void {
     this.#view = newView
     this.#phase = PBFTPhase.Idle
@@ -429,5 +540,15 @@ export class PBFTConsensus {
       bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
     }
     return bytes
+  }
+
+  /** Deterministic bytes identifying a (newView, sequence) pair — what VIEW-CHANGE signatures cover. */
+  #viewChangeDigestBytes(newView: bigint, sequence: bigint): Uint8Array {
+    const a = this.#bigintToBytes(newView)
+    const b = this.#bigintToBytes(sequence)
+    const result = new Uint8Array(a.length + b.length)
+    result.set(a, 0)
+    result.set(b, a.length)
+    return result
   }
 }

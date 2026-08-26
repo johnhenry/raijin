@@ -6,6 +6,7 @@ import {
   InMemoryStateStore,
   TransactionType,
   encodeAccount,
+  encodeTx,
   toHex,
   type Transaction,
   type StateStore,
@@ -13,6 +14,7 @@ import {
 } from '@johnhenry/raijin-core'
 import type { ConsensusTimer, NetworkTransport } from '@johnhenry/raijin-consensus'
 import { ValidatorNode } from '@johnhenry/raijin-validator'
+import { mockSign } from '../../../consensus/test/helpers.js'
 
 const encoder = new TextEncoder()
 
@@ -121,6 +123,13 @@ export class RaijinTestNode {
 
   /**
    * Submit a transfer transaction to this node's mempool.
+   *
+   * Signs with the test harness's HMAC-based `mockSign` scheme (see
+   * consensus/test/helpers.ts), keyed by `from` — this is what
+   * `mockVerifier` (wired as every node's tx-signature verifier) actually
+   * checks. A garbage/unsigned placeholder would now be correctly rejected
+   * by the mempool/state machine, since `mockVerifier` performs a real
+   * check rather than trivially returning true.
    */
   async submitTx(from: Uint8Array, to: Uint8Array, amount: bigint, nonce = 0n): Promise<string> {
     const tx: Transaction = {
@@ -129,9 +138,10 @@ export class RaijinTestNode {
       value: amount,
       nonce,
       data: new Uint8Array([TransactionType.Transfer]),
-      signature: new Uint8Array(64),
+      signature: new Uint8Array(0),
       chainId: 1n,
     }
+    tx.signature = await mockSign(from)(encodeTx(tx))
     return this.node.submitTransaction(tx)
   }
 
