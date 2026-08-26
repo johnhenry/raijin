@@ -31,9 +31,9 @@ Think of it as the OP Stack, but for browsers.
 ## Quick Start
 
 ```bash
-pnpm install
-pnpm build
-pnpm test
+npm install
+npm run build
+npm run test
 ```
 
 ## Architecture
@@ -66,22 +66,22 @@ network transport (WebRTC, WebSocket, libp2p, etc.).
 
 ```bash
 # Install dependencies
-pnpm install
+npm install
 
 # Build all packages (uses Turborepo)
-pnpm build
+npm run build
 
 # Run all tests
-pnpm test
+npm run test
 
 # Run tests in watch mode (root vitest config)
 npx vitest
 
 # Type-check all packages
-pnpm typecheck
+npm run typecheck
 
 # Clean build artifacts
-pnpm clean
+npm run clean
 ```
 
 ## Name
