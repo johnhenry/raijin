@@ -70,6 +70,19 @@ The 8-byte big-endian data prefix described above.
 
 `MempoolConfig`, `FeeExtractor` (`(tx) => bigint`), `TransactionVerifier` (`(tx) => Promise<boolean>`), `GossipTransport` (`{ broadcast(tx) }`), `MempoolEvents`.
 
+## Using it as a block builder's source
+
+The intended consumption pattern — take the top of the pool, build, then prune exactly what was included:
+
+```js
+const txs = pool.pendingForProposer(maxTxPerBlock) // top-N by fee
+const block = await buildBlock(txs)                // your producer
+// …after the block finalizes:
+pool.removeBatch(block.transactions)               // prune by sender+nonce
+```
+
+`pending()` returns a fresh array each call, so it's safe to build from while `submit()`s keep arriving — but the pool contents can change between `pendingForProposer()` and `removeBatch()`, which is fine: `removeBatch` returns how many were actually removed, and transactions that arrived meanwhile simply wait for the next block.
+
 ## Which mempool am I holding?
 
 | | `@johnhenry/raijin-mempool` `Mempool` | `@johnhenry/raijin-validator` `Mempool` |

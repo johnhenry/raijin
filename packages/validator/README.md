@@ -70,6 +70,16 @@ Config: `proposer` (pubkey), `consensus`, `mempool`, optional `maxTxPerBlock` (d
 
 `new Mempool(maxSize = 4096)` — `add(tx): Promise<string>` (throws when full), `pending(limit?)` (FIFO), `remove(hashHex)`, `removeBatch(txs)`, `clear()`, `size`. Keyed by hash of the signed encoding, so the same signed tx submitted twice occupies one slot.
 
+## Running more than one node
+
+Everything above scales to a real mesh, but three things change:
+
+1. **The transport becomes real.** Every node's `transport.broadcast`/`send` must reach every other validator, and `onMessage` must report the sender's actual public key as `from` — consensus trusts that value, so an unauthenticated transport means any peer can impersonate any validator. If your wire format is JSON, consensus messages carry `bigint`s and `Uint8Array`s; you need a replacer/reviver pair (`packages/consensus/test/helpers.ts` has a working one).
+2. **`validators` must be byte-identical on every node** — same keys, same order. Leader election is positional (`view % n`), so a different ordering means nodes disagree about who may propose and nothing ever finalizes, with no error to tell you why.
+3. **Quorum math starts to matter.** At n = 4 you tolerate one faulty node (quorum 3); below that, quorum is 1 and any single node can finalize alone. Pick n = 3f + 1 for the f you actually need.
+
+Multi-node scenarios — leader crashes, partitions, membership churn — are exercised by the repo's internal `raijin-test-harness` package (`TestOrchestrator` + `PartitionableNetwork` + invariant checkers) rather than examples, because they're timing-sensitive by nature. Read the harness tests for working multi-node wiring.
+
 ## Provenance
 
 Previously published unscoped as [`raijin-validator`](https://www.npmjs.com/package/raijin-validator): `0.0.1` (initial release, 2026-03-15), then `0.0.2` (2026-07-16 — published with a broken build, because the release workflow used plain `npm publish`, which does not rewrite `workspace:*` internal dependency specifiers into real resolved versions; that tarball was unpublished), then `0.0.3` (2026-07-16, same day — republished correctly via `pnpm publish`, the last unscoped version, live until this move).

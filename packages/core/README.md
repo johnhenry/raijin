@@ -81,6 +81,23 @@ toHex(root) // '9c31…'
 
 Deterministic canonical binary encoding (LEB128 varints + length prefixes). `encodeTx(tx)` covers everything **except** the signature — it's the exact byte string that gets signed and that receipts hash. `encodeTxSigned(tx)` appends the signature and is what block producers hash for the tx Merkle root. The decoders return `[value, bytesConsumed]` pairs.
 
+### Genesis funding
+
+There is no genesis-block concept — initial state is whatever you write to the store before the first block. Accounts live under the `'account:'` namespace:
+
+```js
+import { InMemoryStateStore, encodeAccount } from '@johnhenry/raijin-core'
+
+const store = new InMemoryStateStore()
+const prefix = new TextEncoder().encode('account:')
+await store.put(
+  new Uint8Array([...prefix, ...alicePublicKey]),
+  encodeAccount({ balance: 1_000n, nonce: 0n, reputation: 0n }),
+)
+```
+
+Do this identically on every node (before `start()`), or their state roots diverge from block one.
+
 ### Errors
 
 `RaijinError` base class, plus `InvalidTransactionError`, `InvalidBlockError`, `StateError`, `InsufficientBalanceError`. The state machine's normal failure path is revert receipts; these classes are for out-of-band failures.

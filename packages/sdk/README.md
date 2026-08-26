@@ -80,6 +80,22 @@ interface ClientTransport {
 
 For tests and demos, back it directly with a `ValidatorNode`: `getAccount` → `node.stateMachine.getAccount`, `submitTransaction` → `node.submitTransaction` + match the receipt by `hash(encodeTx(tx))` in `onBlockFinalized`.
 
+## Correlating submissions with receipts
+
+Receipts identify transactions by `txHash = hash(encodeTx(tx))` — the hash of the *unsigned* canonical encoding (the validator's mempool separately keys by the signed encoding; don't mix them up). To match your own submission inside a block-finalized callback:
+
+```js
+import { hash, encodeTx, equal } from '@johnhenry/raijin-core'
+
+const want = await hash(encodeTx(tx))
+node.onBlockFinalized((_block, receipts) => {
+  const mine = receipts.find((r) => equal(r.txHash, want))
+  if (mine) console.log(mine.status, mine.revertReason ?? '')
+})
+```
+
+This is exactly how the in-process `ClientTransport` in `examples/07-sdk-end-to-end.mjs` implements `submitTransaction()`'s wait-for-receipt semantics.
+
 ## Provenance
 
 Previously published unscoped as [`raijin-sdk`](https://www.npmjs.com/package/raijin-sdk): `0.0.1` (initial release, 2026-03-15), then `0.0.2` (2026-07-16 — published with a broken build, because the release workflow used plain `npm publish`, which does not rewrite `workspace:*` internal dependency specifiers into real resolved versions; that tarball was unpublished), then `0.0.3` (2026-07-16, same day — republished correctly via `pnpm publish`, the last unscoped version, live until this move).

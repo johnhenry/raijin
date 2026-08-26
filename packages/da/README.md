@@ -82,6 +82,20 @@ The stub. Options (`rpcUrl`, `beaconUrl`, `chainId`) are accepted and stored; `s
 
 3-byte magic header (`RJC` compressed / `RJR` raw) + payload. Compression is used only when fflate is available **and** actually shrinks the payload. `decode()` throws on missing/unknown magic and on compressed data without fflate.
 
+## Wiring DA into a validator
+
+`ValidatorNode` (in `@johnhenry/raijin-validator`) does not post blocks to a DA layer yet — the pipeline is yours to call, and the natural place is a block-finalization handler:
+
+```js
+node.onBlockFinalized(async (block) => {
+  const bytes = serializeBlock(block)          // your serialization
+  const commitment = await da.submit(await encode(bytes))
+  await commitmentStore.save(block.header.number, commitment)
+})
+```
+
+Keep the commitment next to the block number; that pair is what a later reader needs to `retrieve()` and `verify()`. And remember the scoping above — storing the commitment proves nothing by itself; verification happens at read time, against whatever the backend still serves.
+
 ## Provenance
 
 Previously published unscoped as [`raijin-da`](https://www.npmjs.com/package/raijin-da): `0.0.1` (initial release, 2026-03-15), then `0.0.2` (2026-07-16 — published with a broken build, because the release workflow used plain `npm publish`, which does not rewrite `workspace:*` internal dependency specifiers into real resolved versions; that tarball was unpublished), then `0.0.3` (2026-07-16, same day — republished correctly via `pnpm publish`, the last unscoped version, live until this move).
