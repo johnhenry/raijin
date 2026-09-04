@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 
 import { StateMachine, InMemoryStateStore, hash, type Block } from '@johnhenry/raijin-core'
-import { PBFTConsensus, ValidatorSet, PBFTPhase } from '../src/index.js'
+import { PBFTConsensus, ValidatorSet, PBFTPhase, voteDigest, NO_BLOCK_DIGEST } from '../src/index.js'
 import type { NewViewMessage, PrePrepareMessage, ViewChangeMessage } from '../src/types.js'
 import { MockNetwork, DeterministicNetwork, MockTimer, mockVerifier, mockSign, makeTestKey } from './helpers.js'
 
@@ -53,14 +53,50 @@ async function computeDigest(block: Block): Promise<Uint8Array> {
   return hash(result)
 }
 
-/** Mirrors PBFTConsensus#viewChangeDigestBytes (what VIEW-CHANGE signatures cover — signed directly, not pre-hashed). */
-async function computeViewChangeDigest(newView: bigint, sequence: bigint): Promise<Uint8Array> {
-  const a = bigintToBytes(newView)
-  const b = bigintToBytes(sequence)
-  const combined = new Uint8Array(a.length + b.length)
-  combined.set(a, 0)
-  combined.set(b, a.length)
-  return combined
+/** Sign one vote the way PBFTConsensus does: over the domain-separated
+ *  payload from `voteDigest`, not over the bare block digest. */
+async function signVote(
+  key: Uint8Array,
+  phase: 'pre-prepare' | 'prepare' | 'commit' | 'view-change',
+  view: bigint,
+  sequence: bigint,
+  digest: Uint8Array,
+): Promise<Uint8Array> {
+  return mockSign(key)(await voteDigest(phase, view, sequence, digest))
+}
+
+/** A validly-signed VIEW-CHANGE from `key`. */
+async function makeViewChange(
+  key: Uint8Array,
+  newView: bigint,
+  sequence: bigint,
+): Promise<ViewChangeMessage> {
+  return {
+    type: 'view-change',
+    newView,
+    sequence,
+    from: key,
+    signature: await signVote(key, 'view-change', newView, sequence, NO_BLOCK_DIGEST),
+  }
+}
+
+/** A validly-signed PRE-PREPARE from `key`. */
+async function makePrePrepare(
+  key: Uint8Array,
+  view: bigint,
+  sequence: bigint,
+  block: Block,
+  digest: Uint8Array,
+): Promise<PrePrepareMessage> {
+  return {
+    type: 'pre-prepare',
+    view,
+    sequence,
+    block,
+    digest,
+    from: key,
+    signature: await signVote(key, 'pre-prepare', view, sequence, digest),
+  }
 }
 
 describe('PBFTConsensus', () => {
@@ -293,11 +329,11 @@ describe('PBFTConsensus', () => {
       // Bring p1 to Prepared with two genuine PREPAREs (2 + self = 3 = quorum).
       network.createTransport(key2).send(key1, {
         type: 'prepare', view: 0n, sequence: 1n, digest, from: key2,
-        signature: await mockSign(key2)(digest),
+        signature: await signVote(key2, 'prepare', 0n, 1n, digest),
       })
       network.createTransport(key3).send(key1, {
         type: 'prepare', view: 0n, sequence: 1n, digest, from: key3,
-        signature: await mockSign(key3)(digest),
+        signature: await signVote(key3, 'prepare', 0n, 1n, digest),
       })
       await network.drainAll()
 
@@ -322,11 +358,11 @@ describe('PBFTConsensus', () => {
       // Now deliver two GENUINE commits — this is what should actually finalize it.
       network.createTransport(key2).send(key1, {
         type: 'commit', view: 0n, sequence: 1n, digest, from: key2,
-        signature: await mockSign(key2)(digest),
+        signature: await signVote(key2, 'commit', 0n, 1n, digest),
       })
       network.createTransport(key3).send(key1, {
         type: 'commit', view: 0n, sequence: 1n, digest, from: key3,
-        signature: await mockSign(key3)(digest),
+        signature: await signVote(key3, 'commit', 0n, 1n, digest),
       })
       await network.drainAll()
 
@@ -356,7 +392,7 @@ describe('PBFTConsensus', () => {
       // Genuine PREPARE from key2 (2/3).
       network.createTransport(key2).send(key1, {
         type: 'prepare', view: 0n, sequence: 1n, digest, from: key2,
-        signature: await mockSign(key2)(digest),
+        signature: await signVote(key2, 'prepare', 0n, 1n, digest),
       })
       await network.drainAll()
       expect(p1.consensus.phase).toBe(PBFTPhase.PrePrepared) // still not quorum
@@ -372,7 +408,7 @@ describe('PBFTConsensus', () => {
       // Genuine PREPARE from key3 — now 3/3, reaches quorum.
       network.createTransport(key3).send(key1, {
         type: 'prepare', view: 0n, sequence: 1n, digest, from: key3,
-        signature: await mockSign(key3)(digest),
+        signature: await signVote(key3, 'prepare', 0n, 1n, digest),
       })
       await network.drainAll()
       expect(p1.consensus.phase).toBe(PBFTPhase.Prepared)
@@ -388,10 +424,9 @@ describe('PBFTConsensus', () => {
 
       const newView = 1n
       const sequence = 0n
-      const digest = await computeViewChangeDigest(newView, sequence)
-      const signature = await mockSign(key3)(digest)
+      const vc = await makeViewChange(key3, newView, sequence)
 
-      const makeVc = (): ViewChangeMessage => ({ type: 'view-change', newView, sequence, from: key3, signature })
+      const makeVc = (): ViewChangeMessage => ({ ...vc })
 
       // The SAME sender's VIEW-CHANGE delivered 3 times must not fake a 3-of-4 quorum.
       network.createTransport(key3).send(key2, makeVc())
@@ -412,12 +447,9 @@ describe('PBFTConsensus', () => {
 
       const newView = 1n
       const sequence = 0n
-      const digest = await computeViewChangeDigest(newView, sequence)
 
       for (const key of [key1, key3, key4]) {
-        const signature = await mockSign(key)(digest)
-        const msg: ViewChangeMessage = { type: 'view-change', newView, sequence, from: key, signature }
-        network.createTransport(key).send(key2, msg)
+        network.createTransport(key).send(key2, await makeViewChange(key, newView, sequence))
       }
       await network.drainAll()
 
@@ -435,17 +467,13 @@ describe('PBFTConsensus', () => {
 
       const newView = 1n
       const sequence = 0n
-      const digest = await computeViewChangeDigest(newView, sequence)
-      const signature = await mockSign(key1)(digest)
+      const vc = await makeViewChange(key1, newView, sequence)
 
       // Only one distinct valid backer (need 3) — repeating it doesn't help.
       const badNewView: NewViewMessage = {
         type: 'new-view',
         view: newView,
-        viewChanges: [
-          { type: 'view-change', newView, sequence, from: key1, signature },
-          { type: 'view-change', newView, sequence, from: key1, signature },
-        ],
+        viewChanges: [{ ...vc }, { ...vc }],
       }
       network.createTransport(key3).send(key2, badNewView)
       await network.drainAll()
@@ -487,12 +515,10 @@ describe('PBFTConsensus', () => {
 
       const newView = 1n
       const sequence = 0n
-      const digest = await computeViewChangeDigest(newView, sequence)
 
       const viewChanges: ViewChangeMessage[] = []
       for (const key of [key1, key3, key4]) {
-        const signature = await mockSign(key)(digest)
-        viewChanges.push({ type: 'view-change', newView, sequence, from: key, signature })
+        viewChanges.push(await makeViewChange(key, newView, sequence))
       }
       const goodNewView: NewViewMessage = { type: 'new-view', view: newView, viewChanges }
       network.createTransport(key1).send(key2, goodNewView)
@@ -518,11 +544,11 @@ describe('PBFTConsensus', () => {
       // and has recorded a prepared certificate for sequence 1.
       network.createTransport(key2).send(key1, {
         type: 'prepare', view: 0n, sequence: 1n, digest: digestA, from: key2,
-        signature: await mockSign(key2)(digestA),
+        signature: await signVote(key2, 'prepare', 0n, 1n, digestA),
       })
       network.createTransport(key3).send(key1, {
         type: 'prepare', view: 0n, sequence: 1n, digest: digestA, from: key3,
-        signature: await mockSign(key3)(digestA),
+        signature: await signVote(key3, 'prepare', 0n, 1n, digestA),
       })
       await network.drainAll()
       expect(p1.consensus.phase).toBe(PBFTPhase.Prepared)
@@ -531,12 +557,8 @@ describe('PBFTConsensus', () => {
       // (key2, key3, key4 — distinct senders) BEFORE a COMMIT quorum is
       // reached, so blockA is prepared but never committed.
       const newView = 1n
-      const vcDigest = await computeViewChangeDigest(newView, 1n)
       for (const key of [key2, key3, key4]) {
-        const signature = await mockSign(key)(vcDigest)
-        network.createTransport(key).send(key1, {
-          type: 'view-change', newView, sequence: 1n, from: key, signature,
-        } satisfies ViewChangeMessage)
+        network.createTransport(key).send(key1, await makeViewChange(key, newView, 1n))
       }
       await network.drainAll()
 
@@ -548,9 +570,8 @@ describe('PBFTConsensus', () => {
       // since blockA was already validly prepared at that sequence.
       const blockB = { ...blockA, header: { ...blockA.header, proposer: key3 } }
       const digestB = await computeDigest(blockB)
-      const conflictingPrePrepare: PrePrepareMessage = {
-        type: 'pre-prepare', view: 1n, sequence: 1n, block: blockB, digest: digestB,
-      }
+      const conflictingPrePrepare: PrePrepareMessage =
+        await makePrePrepare(key2, 1n, 1n, blockB, digestB)
       network.createTransport(key2).send(key1, conflictingPrePrepare)
       await network.drainAll()
 
@@ -558,9 +579,8 @@ describe('PBFTConsensus', () => {
 
       // But re-proposing the SAME block (same digest) at the new view must
       // still be accepted — the guard only blocks conflicting proposals.
-      const samePrePrepare: PrePrepareMessage = {
-        type: 'pre-prepare', view: 1n, sequence: 1n, block: blockA, digest: digestA,
-      }
+      const samePrePrepare: PrePrepareMessage =
+        await makePrePrepare(key2, 1n, 1n, blockA, digestA)
       network.createTransport(key2).send(key1, samePrePrepare)
       await network.drainAll()
 
@@ -569,4 +589,118 @@ describe('PBFTConsensus', () => {
       p1.consensus.stop()
     })
   })
+  // A PREPARE is broadcast to every peer. If it signs the same bytes a COMMIT
+  // signs, then every peer holds a valid COMMIT from every prepared validator,
+  // and the commit phase proves nothing. See issue #17.
+  describe('vote signatures are bound to their phase, view and sequence', () => {
+    it('does not accept a PREPARE signature replayed as that validator COMMIT', async () => {
+      const p1 = createPeer(key1) // leader; quorum = 3 of 4
+      p1.consensus.start()
+
+      let finalized = 0
+      p1.consensus.onBlockFinalized(() => finalized++)
+
+      const block = makeBlock(1n, key1)
+      const digest = await computeDigest(block)
+      await p1.consensus.propose(block)
+
+      // Two honest PREPAREs — and nothing else from key2/key3.
+      const honestPrepares = []
+      for (const key of [key2, key3]) {
+        const msg = {
+          type: 'prepare' as const, view: 0n, sequence: 1n, digest, from: key,
+          signature: await signVote(key, 'prepare', 0n, 1n, digest),
+        }
+        honestPrepares.push(msg)
+        network.createTransport(key).send(key1, msg)
+      }
+      await network.drainAll()
+      expect(p1.consensus.phase).toBe(PBFTPhase.Prepared)
+
+      // Replay each PREPARE, byte for byte, as that validator's COMMIT.
+      for (const prepare of honestPrepares) {
+        network.createTransport(prepare.from).send(key1, {
+          type: 'commit', view: 0n, sequence: 1n, digest, from: prepare.from,
+          signature: prepare.signature,
+        })
+      }
+      await network.drainAll()
+
+      expect(finalized).toBe(0)
+      expect(p1.consensus.phase).toBe(PBFTPhase.Prepared)
+
+      p1.consensus.stop()
+    })
+
+    it('does not accept a PREPARE signature rewritten into another view or sequence', async () => {
+      const p1 = createPeer(key1)
+      p1.consensus.start()
+
+      const block = makeBlock(1n, key1)
+      const digest = await computeDigest(block)
+      await p1.consensus.propose(block)
+      expect(p1.consensus.phase).toBe(PBFTPhase.PrePrepared)
+
+      // One honest PREPARE: 2 of the quorum of 3.
+      network.createTransport(key3).send(key1, {
+        type: 'prepare', view: 0n, sequence: 1n, digest, from: key3,
+        signature: await signVote(key3, 'prepare', 0n, 1n, digest),
+      })
+      await network.drainAll()
+      expect(p1.consensus.phase).toBe(PBFTPhase.PrePrepared)
+
+      // key2's signature was made for (view 9, sequence 7) and is re-sent with
+      // the header fields rewritten to the round p1 is actually in. If the
+      // signed payload did not cover view and sequence this would be the third
+      // vote and would carry the round to Prepared.
+      network.createTransport(key2).send(key1, {
+        type: 'prepare', view: 0n, sequence: 1n, digest, from: key2,
+        signature: await signVote(key2, 'prepare', 9n, 7n, digest),
+      })
+      await network.drainAll()
+      expect(p1.consensus.phase).toBe(PBFTPhase.PrePrepared)
+
+      // The same validator's correctly-scoped vote does reach quorum.
+      network.createTransport(key2).send(key1, {
+        type: 'prepare', view: 0n, sequence: 1n, digest, from: key2,
+        signature: await signVote(key2, 'prepare', 0n, 1n, digest),
+      })
+      await network.drainAll()
+      expect(p1.consensus.phase).toBe(PBFTPhase.Prepared)
+
+      p1.consensus.stop()
+    })
+
+    it('does not accept an unsigned or wrongly-signed PRE-PREPARE from the leader address', async () => {
+      const p2 = createPeer(key2) // key1 is leader for view 0
+      p2.consensus.start()
+
+      const block = makeBlock(1n, key1)
+      const digest = await computeDigest(block)
+
+      // Right sender, signature made by somebody else.
+      network.createTransport(key1).send(key2, {
+        type: 'pre-prepare', view: 0n, sequence: 1n, block, digest, from: key1,
+        signature: await signVote(key3, 'pre-prepare', 0n, 1n, digest),
+      })
+      await network.drainAll()
+      expect(p2.consensus.phase).toBe(PBFTPhase.Idle)
+
+      // Right sender, garbage signature.
+      network.createTransport(key1).send(key2, {
+        type: 'pre-prepare', view: 0n, sequence: 1n, block, digest, from: key1,
+        signature: new Uint8Array(32).fill(0xcd),
+      })
+      await network.drainAll()
+      expect(p2.consensus.phase).toBe(PBFTPhase.Idle)
+
+      // Properly signed by the leader — accepted.
+      network.createTransport(key1).send(key2, await makePrePrepare(key1, 0n, 1n, block, digest))
+      await network.drainAll()
+      expect(p2.consensus.phase).toBe(PBFTPhase.PrePrepared)
+
+      p2.consensus.stop()
+    })
+  })
+
 })
