@@ -11,13 +11,24 @@ import { hash, equal, toHex, fromHex } from '@johnhenry/raijin-core'
 import type { DALayer, DACommitment } from './types.js'
 
 export interface CelestiaDAOptions {
-  /** Base URL for the Celestia light node API. Default: http://localhost:26658 */
+  /** Base URL for the Celestia light node API. Default: http://localhost:26658
+   *  A cleartext `http:` endpoint is only accepted for loopback hosts when an
+   *  `authToken` is set -- see the constructor. */
   endpoint?: string
   /** Auth token for the node API (required by most Celestia nodes). */
   authToken?: string
   /** Namespace ID (8 bytes hex). Data is posted to this namespace. */
   namespace: string
+  /** Allow sending `authToken` to a non-loopback `http:` endpoint. Off by
+   *  default: the Celestia node auth token is a node credential, and on most
+   *  deployments it carries write access, so putting it in an `Authorization`
+   *  header over cleartext is never right by accident. Opt in only for a
+   *  network you control end to end. */
+  allowInsecureAuth?: boolean
 }
+
+/** Hosts for which cleartext `http:` is not a credential-disclosure risk. */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
 
 export class CelestiaDA implements DALayer {
   readonly name = 'celestia'
@@ -30,6 +41,17 @@ export class CelestiaDA implements DALayer {
     this.#endpoint = (options.endpoint ?? 'http://localhost:26658').replace(/\/$/, '')
     this.#authToken = options.authToken
     this.#namespace = options.namespace
+
+    if (this.#authToken && !options.allowInsecureAuth) {
+      const url = new URL(this.#endpoint)
+      if (url.protocol === 'http:' && !LOOPBACK_HOSTS.has(url.hostname)) {
+        throw new Error(
+          `CelestiaDA: refusing to send an auth token to ${url.origin} over cleartext http. ` +
+          'Use https, a loopback host, or pass allowInsecureAuth: true if the ' +
+          'network between this process and the node is genuinely trusted.',
+        )
+      }
+    }
   }
 
   async submit(data: Uint8Array): Promise<DACommitment> {
@@ -65,7 +87,10 @@ export class CelestiaDA implements DALayer {
   async retrieve(commitment: DACommitment): Promise<Uint8Array> {
     const height = commitment.height.toString()
     const res = await fetch(
-      `${this.#endpoint}/namespaced_data/${this.#namespace}/height/${height}`,
+      // Percent-encode: `namespace` is caller-supplied and would otherwise be
+      // able to rewrite the request path (`/`, `..`, `?`) and carry the auth
+      // token to a different node API route.
+      `${this.#endpoint}/namespaced_data/${encodeURIComponent(this.#namespace)}/height/${height}`,
       { headers: this.#headers() },
     )
 

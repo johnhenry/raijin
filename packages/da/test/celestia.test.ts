@@ -118,4 +118,61 @@ describe('CelestiaDA', () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
     expect(Buffer.from(body.data, 'base64').equals(Buffer.from(big))).toBe(true)
   })
+  // The auth token is a node credential; on most Celestia deployments it
+  // carries write access. Sending it over cleartext http to a remote host is
+  // never right by accident. See issue #24.
+  describe('auth token transport', () => {
+    it('refuses an auth token over cleartext http to a non-loopback host', () => {
+      expect(() => new CelestiaDA({
+        endpoint: 'http://celestia.internal:26658',
+        authToken: 'secret-node-token',
+        namespace: 'ns1',
+      })).toThrow(/cleartext http/)
+    })
+
+    it('allows an auth token over loopback http', () => {
+      expect(() => new CelestiaDA({
+        endpoint: 'http://127.0.0.1:26658',
+        authToken: 'secret-node-token',
+        namespace: 'ns1',
+      })).not.toThrow()
+    })
+
+    it('allows an auth token over https', () => {
+      expect(() => new CelestiaDA({
+        endpoint: 'https://celestia.internal:26658',
+        authToken: 'secret-node-token',
+        namespace: 'ns1',
+      })).not.toThrow()
+    })
+
+    it('allows an explicit opt-in for a trusted plaintext network', () => {
+      expect(() => new CelestiaDA({
+        endpoint: 'http://celestia.internal:26658',
+        authToken: 'secret-node-token',
+        namespace: 'ns1',
+        allowInsecureAuth: true,
+      })).not.toThrow()
+    })
+
+    it('does not object to cleartext http when no auth token is set', () => {
+      expect(() => new CelestiaDA({
+        endpoint: 'http://celestia.internal:26658',
+        namespace: 'ns1',
+      })).not.toThrow()
+    })
+  })
+
+  // `namespace` is caller-supplied and was interpolated into the URL path raw,
+  // so it could rewrite the request route and carry the auth token elsewhere.
+  it('percent-encodes the namespace in the retrieve URL', async () => {
+    const da = new CelestiaDA({ endpoint: 'http://localhost:26658', namespace: '../../evil?x=' })
+    fetchMock.mockResolvedValue(jsonResponse({ data: [] }))
+
+    await expect(da.retrieve({ layer: 'celestia', height: 1n, index: 0, hash: new Uint8Array(32) }))
+      .rejects.toThrow()
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toBe('http://localhost:26658/namespaced_data/..%2F..%2Fevil%3Fx%3D/height/1')
+  })
 })
