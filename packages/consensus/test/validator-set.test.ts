@@ -72,6 +72,37 @@ describe('ValidatorSet', () => {
       const keys = Array.from({ length: 7 }, (_, i) => makeTestKey(i + 1))
       expect(new ValidatorSet(keys).quorumSize()).toBe(5)
     })
+
+    const setOf = (n: number) =>
+      new ValidatorSet(Array.from({ length: n }, (_, i) => makeTestKey(i + 1)))
+
+    // The four sizes above are all n = 3f + 1, where the old `2f + 1` formula
+    // happened to be right. These are the sizes it was wrong for. See #19.
+    it('never lets a single node reach quorum in a multi-node set', () => {
+      for (let n = 2; n <= 24; n++) {
+        expect(setOf(n).quorumSize()).toBeGreaterThan(1)
+      }
+    })
+
+    it('guarantees any two quorums share at least one honest node, for every n', () => {
+      for (let n = 1; n <= 60; n++) {
+        const vs = setOf(n)
+        const q = vs.quorumSize()
+        const f = vs.maxFaults
+        // Two quorums overlap in at least 2q - n nodes; at most f of those can
+        // be Byzantine, so safety needs 2q - n >= f + 1.
+        expect(2 * q - n).toBeGreaterThanOrEqual(f + 1)
+        // And a quorum must be reachable when the tolerated faults are absent.
+        expect(q).toBeLessThanOrEqual(n - f)
+      }
+    })
+
+    it('still equals 2f + 1 at every canonical n = 3f + 1', () => {
+      for (let f = 0; f <= 12; f++) {
+        const n = 3 * f + 1
+        expect(setOf(n).quorumSize()).toBe(2 * f + 1)
+      }
+    })
   })
 
   it('maxFaults returns floor((n-1)/3)', () => {
