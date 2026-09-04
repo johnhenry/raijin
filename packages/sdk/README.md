@@ -31,6 +31,7 @@ const tx = await wallet.buildTx({
   to: recipientPublicKey,     // Uint8Array(32), or null for system ops
   value: 250n,
   nonce: account.nonce,
+  chainId: 1n,                // required — see below
 })
 
 const receipt = await client.submitTransaction(tx)  // { txHash, status, revertReason?, index }
@@ -45,14 +46,17 @@ A complete end-to-end run — real Ed25519 verification against an in-process `V
 
 | Member | Purpose |
 | --- | --- |
-| `static generate(): Promise<Wallet>` | New Ed25519 keypair via `crypto.subtle.generateKey`. |
+| `static generate(opts?): Promise<Wallet>` | New Ed25519 keypair via `crypto.subtle.generateKey`. **Non-extractable by default** — pass `{ extractable: true }` only if the key has to be exported. |
 | `static fromKey(pkcs8: Uint8Array): Promise<Wallet>` | Import a private key (PKCS8); the public key is derived from it. |
 | `publicKey: Uint8Array` | 32-byte raw public key — this is your address. |
 | `sign(message): Promise<Uint8Array>` | Raw Ed25519 signature (64 bytes, deterministic). |
-| `buildTx(opts: BuildTxOptions): Promise<Transaction>` | Assembles `{ from: publicKey, to, value, nonce, data?, chainId? }` and signs it. |
-| `exportPrivateKey(): Promise<Uint8Array>` | PKCS8 bytes for storage; round-trips through `fromKey()`. |
+| `buildTx(opts: BuildTxOptions): Promise<Transaction>` | Assembles `{ from: publicKey, to, value, nonce, data?, chainId }` and signs it. |
+| `exportPrivateKey(): Promise<Uint8Array>` | PKCS8 bytes for storage; round-trips through `fromKey()`. Throws unless the wallet was generated with `{ extractable: true }`. |
 
-`BuildTxOptions`: `{ to, value, nonce, data?, chainId? }` — `data` defaults to empty (which the state machine treats as a `Transfer`; set `data[0]` to a `TransactionType` byte for anything else).
+`BuildTxOptions`: `{ to, value, nonce, data?, chainId }` — `data` defaults to empty (which the state machine treats as a `Transfer`; set `data[0]` to a `TransactionType` byte for anything else).
+
+- **`chainId` is required.** It is the only field separating one deployment from another, so a default would give every chain that never chose one the same id, and a signed transfer on either would be a valid signed transfer on the other for any account whose key is shared between them.
+- **Private keys are non-extractable unless you ask.** In a browser that is the strongest guarantee WebCrypto offers: the key cannot leave the browser, whatever script asks for it. `exportPrivateKey()` needs `Wallet.generate({ extractable: true })`.
 
 ### `RaijinClient`
 

@@ -15,7 +15,28 @@ export interface BuildTxOptions {
   value: bigint
   nonce: bigint
   data?: Uint8Array
-  chainId?: bigint
+  /**
+   * Chain identifier. Required — it is the only thing in the transaction
+   * format that separates one deployment from another, so a default would
+   * make every chain that never chose one share an id, and a signed transfer
+   * on either would be a valid signed transfer on the other for any account
+   * whose key is shared between them.
+   */
+  chainId: bigint
+}
+
+export interface GenerateOptions {
+  /**
+   * Whether the private key can be exported with `exportPrivateKey()`.
+   * Default: `false`.
+   *
+   * Raijin's stated environment is the browser, where a non-extractable
+   * `CryptoKey` is the strongest guarantee WebCrypto offers: the key cannot
+   * leave the browser, whatever script asks. An extractable key is one
+   * `crypto.subtle.exportKey` call away from any code running in the origin.
+   * Turn this on only when the key genuinely has to be persisted or moved.
+   */
+  extractable?: boolean
 }
 
 export class Wallet implements TransactionSigner {
@@ -27,11 +48,15 @@ export class Wallet implements TransactionSigner {
     this.#publicKeyBytes = publicKeyBytes
   }
 
-  /** Generate a new Ed25519 keypair. */
-  static async generate(): Promise<Wallet> {
+  /**
+   * Generate a new Ed25519 keypair. The private key is **non-extractable**
+   * unless `{ extractable: true }` is passed — see `GenerateOptions`.
+   */
+  static async generate(opts: GenerateOptions = {}): Promise<Wallet> {
+    const extractable = opts.extractable ?? false
     const keyPair = await globalThis.crypto.subtle.generateKey(
       'Ed25519',
-      true, // extractable
+      extractable,
       ['sign', 'verify'],
     ) as CryptoKeyPair
 
@@ -84,13 +109,19 @@ export class Wallet implements TransactionSigner {
 
   /** Build and sign a transaction. */
   async buildTx(opts: BuildTxOptions): Promise<Transaction> {
+    // Guard the JS callers the type system does not reach: an undefined
+    // chainId would otherwise be encoded as a chain id of its own.
+    if (typeof opts.chainId !== 'bigint') {
+      throw new TypeError('Wallet.buildTx: chainId is required and must be a bigint')
+    }
+
     const tx: Transaction = {
       from: this.#publicKeyBytes,
       to: opts.to,
       value: opts.value,
       nonce: opts.nonce,
       data: opts.data ?? new Uint8Array(0),
-      chainId: opts.chainId ?? 1n,
+      chainId: opts.chainId,
       signature: new Uint8Array(0), // placeholder
     }
 
@@ -101,8 +132,17 @@ export class Wallet implements TransactionSigner {
     return tx
   }
 
-  /** Export the private key as PKCS8 bytes. */
+  /**
+   * Export the private key as PKCS8 bytes.
+   * Throws unless the wallet was created with `{ extractable: true }`.
+   */
   async exportPrivateKey(): Promise<Uint8Array> {
+    if (!this.#privateKey.extractable) {
+      throw new Error(
+        'Wallet.exportPrivateKey: this key is non-extractable. ' +
+        'Pass Wallet.generate({ extractable: true }) if the key has to leave the process.',
+      )
+    }
     const pkcs8 = await globalThis.crypto.subtle.exportKey('pkcs8', this.#privateKey)
     return new Uint8Array(pkcs8)
   }

@@ -97,7 +97,7 @@ const unsub = client.subscribe((block) =>
   console.log('new block:', block.header.number, '| txs:', block.transactions.length))
 
 // Build and sign a transfer — Wallet signs the canonical tx encoding
-const tx = await userWallet.buildTx({ to: merchant, value: 250n, nonce: 0n })
+const tx = await userWallet.buildTx({ to: merchant, value: 250n, nonce: 0n, chainId: 1n })
 assert.equal(tx.signature.length, 64)
 
 const receipt = await client.submitTransaction(tx)
@@ -120,7 +120,7 @@ assert.equal(await client.getBlock(99n), null)
 // (@johnhenry/raijin-mempool) verifies signatures at submission time —
 // stronger than catching it later at execution: the bad tx never makes
 // it into a block at all.
-const evil = await userWallet.buildTx({ to: merchant, value: 1n, nonce: 1n })
+const evil = await userWallet.buildTx({ to: merchant, value: 1n, nonce: 1n, chainId: 1n })
 evil.value = 999n // mutate after signing
 await assert.rejects(() => client.submitTransaction(evil), /rejected by mempool/)
 console.log('tampered tx: rejected by mempool before ever reaching a block')

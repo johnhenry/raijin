@@ -43,13 +43,14 @@ describe('Wallet', () => {
       to: recipient,
       value: 100n,
       nonce: 0n,
+      chainId: 1n,
     })
 
     expect(tx.from).toEqual(wallet.publicKey)
     expect(tx.to).toEqual(recipient)
     expect(tx.value).toBe(100n)
     expect(tx.nonce).toBe(0n)
-    expect(tx.chainId).toBe(1n) // default
+    expect(tx.chainId).toBe(1n)
     expect(tx.signature.length).toBe(64)
   })
 
@@ -69,7 +70,7 @@ describe('Wallet', () => {
   })
 
   it('exports and reimports a private key', async () => {
-    const wallet = await Wallet.generate()
+    const wallet = await Wallet.generate({ extractable: true })
     const pkcs8 = await wallet.exportPrivateKey()
     expect(pkcs8).toBeInstanceOf(Uint8Array)
     expect(pkcs8.length).toBeGreaterThan(0)
@@ -79,7 +80,7 @@ describe('Wallet', () => {
   })
 
   it('reimported wallet produces same signatures', async () => {
-    const wallet = await Wallet.generate()
+    const wallet = await Wallet.generate({ extractable: true })
     const pkcs8 = await wallet.exportPrivateKey()
     const restored = await Wallet.fromKey(pkcs8)
 
@@ -112,7 +113,7 @@ describe('Wallet', () => {
   })
 
   it('reimports a PKCS8 key held in a larger buffer', async () => {
-    const wallet = await Wallet.generate()
+    const wallet = await Wallet.generate({ extractable: true })
     const pkcs8 = await wallet.exportPrivateKey()
 
     // Same bytes, but as a view with a non-zero byteOffset.
@@ -122,5 +123,32 @@ describe('Wallet', () => {
 
     const restored = await Wallet.fromKey(view)
     expect(restored.publicKey).toEqual(wallet.publicKey)
+  })
+  // Convenient-but-unsafe defaults. See issue #23.
+  describe('secure defaults', () => {
+    it('generates a non-extractable private key by default', async () => {
+      const wallet = await Wallet.generate()
+      await expect(wallet.exportPrivateKey()).rejects.toThrow(/non-extractable/)
+    })
+
+    it('exports only when extractability was asked for', async () => {
+      const wallet = await Wallet.generate({ extractable: true })
+      const pkcs8 = await wallet.exportPrivateKey()
+      expect(pkcs8.length).toBeGreaterThan(0)
+    })
+
+    it('a non-extractable wallet still signs', async () => {
+      const wallet = await Wallet.generate()
+      const sig = await wallet.sign(new Uint8Array([1, 2, 3]))
+      expect(sig.length).toBe(64)
+    })
+
+    it('refuses to build a transaction with no chainId', async () => {
+      const wallet = await Wallet.generate()
+      await expect(
+        // chainId is required at the type level; this is the JS caller.
+        (wallet.buildTx as (o: unknown) => Promise<unknown>)({ to: null, value: 0n, nonce: 0n }),
+      ).rejects.toThrow(/chainId is required/)
+    })
   })
 })
