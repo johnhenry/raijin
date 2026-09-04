@@ -703,4 +703,58 @@ describe('PBFTConsensus', () => {
     })
   })
 
+  // VIEW-CHANGE signatures cover (newView, sequence) and nothing time-bound, so
+  // a recorded quorum stays valid forever. Only a monotonic check stops it.
+  // See issue #18.
+  describe('view changes only move forward', () => {
+    it('ignores a replayed VIEW-CHANGE quorum for a view already passed', async () => {
+      const p2 = createPeer(key2)
+      p2.consensus.start()
+
+      const recorded: ViewChangeMessage[] = []
+      for (const key of [key1, key3, key4]) {
+        recorded.push(await makeViewChange(key, 2n, 0n))
+      }
+      for (const vc of recorded) network.createTransport(vc.from).send(key2, vc)
+      await network.drainAll()
+      expect(p2.consensus.currentView).toBe(2n)
+
+      // Move on to view 5.
+      for (const key of [key1, key3, key4]) {
+        network.createTransport(key).send(key2, await makeViewChange(key, 5n, 0n))
+      }
+      await network.drainAll()
+      expect(p2.consensus.currentView).toBe(5n)
+
+      // Replay the recorded view-2 quorum. Signatures are still valid.
+      for (const vc of recorded) network.createTransport(vc.from).send(key2, { ...vc })
+      await network.drainAll()
+      expect(p2.consensus.currentView).toBe(5n)
+
+      p2.consensus.stop()
+    })
+
+    it('ignores a NEW-VIEW carrying a genuine quorum for a view already passed', async () => {
+      const p2 = createPeer(key2)
+      p2.consensus.start()
+
+      for (const key of [key1, key3, key4]) {
+        network.createTransport(key).send(key2, await makeViewChange(key, 4n, 0n))
+      }
+      await network.drainAll()
+      expect(p2.consensus.currentView).toBe(4n)
+
+      const stale: NewViewMessage = {
+        type: 'new-view',
+        view: 1n,
+        viewChanges: await Promise.all([key1, key3, key4].map(k => makeViewChange(k, 1n, 0n))),
+      }
+      network.createTransport(key1).send(key2, stale)
+      await network.drainAll()
+
+      expect(p2.consensus.currentView).toBe(4n)
+
+      p2.consensus.stop()
+    })
+  })
 })

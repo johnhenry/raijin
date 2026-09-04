@@ -298,6 +298,12 @@ export class PBFTConsensus {
   }
 
   async #handleViewChange(from: Uint8Array, msg: ViewChangeMessage): Promise<void> {
+    // A view change only ever moves forward. A VIEW-CHANGE signature covers
+    // (newView, sequence) and nothing time-bound, so a recorded quorum stays
+    // valid forever; without this check, replaying one rewinds `#view` and
+    // clears every in-flight round, indefinitely, with no keys required.
+    if (msg.newView <= this.#view) return
+
     if (!(await this.#verifyVote('view-change', msg.newView, msg.sequence, NO_BLOCK_DIGEST, msg.signature, from))) return
 
     const key = msg.newView.toString()
@@ -325,6 +331,10 @@ export class PBFTConsensus {
    * validator could force every other node to jump views at will.
    */
   async #handleNewView(_from: Uint8Array, msg: NewViewMessage): Promise<void> {
+    // Forward only — see #handleViewChange. A NEW-VIEW is the cheapest replay:
+    // one message carrying a recorded quorum.
+    if (msg.view <= this.#view) return
+
     const seenSenders = new Set<string>()
 
     for (const vc of msg.viewChanges) {
@@ -474,6 +484,7 @@ export class PBFTConsensus {
    * tracked as follow-up work.
    */
   #doViewChange(newView: bigint): void {
+    if (newView <= this.#view) return
     this.#view = newView
     this.#phase = PBFTPhase.Idle
     this.#pendingBlock = null
