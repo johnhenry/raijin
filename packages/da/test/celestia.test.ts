@@ -100,4 +100,22 @@ describe('CelestiaDA', () => {
     const commitment = { layer: 'celestia', height: 3n, index: 0, hash: new Uint8Array(32) }
     expect(await da.verify(commitment)).toBe(false)
   })
+  // Regression: uint8ToBase64 spread the whole blob into String.fromCharCode,
+  // one argument per byte, and threw RangeError between 64 KiB and 128 KiB --
+  // exactly the sizes a DA layer carries. See issue #22.
+  it('submit encodes a 1 MiB blob without overflowing the stack', async () => {
+    const da = new CelestiaDA({ endpoint: 'http://localhost:26658', namespace: 'ns1' })
+    fetchMock.mockResolvedValue(jsonResponse({ height: 7, txhash: 'abc' }))
+
+    const big = new Uint8Array(1024 * 1024)
+    for (let i = 0; i < big.length; i++) big[i] = i & 0xff
+
+    const commitment = await da.submit(big)
+    expect(commitment.height).toBe(7n)
+    expect(equal(commitment.hash, await hash(big))).toBe(true)
+
+    // The blob round-trips through base64 byte-for-byte.
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(Buffer.from(body.data, 'base64').equals(Buffer.from(big))).toBe(true)
+  })
 })

@@ -113,10 +113,21 @@ export class CelestiaDA implements DALayer {
 
 // ── Base64 helpers ─────────────────────────────────────────────────────
 
+/** Max bytes passed to `String.fromCharCode` per call. Spreading a whole blob
+ *  puts one argument on the stack per byte and throws RangeError somewhere
+ *  between 64 KiB and 128 KiB -- i.e. at the sizes a DA layer exists to
+ *  carry, and at a threshold that varies with engine and stack depth. */
+const BASE64_CHUNK = 0x8000
+
 function uint8ToBase64(data: Uint8Array): string {
-  // Works in both browser (btoa) and Node (Buffer)
+  // Works in both browser (btoa) and Node (Buffer). Node 18+ defines a global
+  // btoa, so the Buffer branch is a fallback for environments without either.
   if (typeof btoa === 'function') {
-    return btoa(String.fromCharCode(...data))
+    let binary = ''
+    for (let i = 0; i < data.length; i += BASE64_CHUNK) {
+      binary += String.fromCharCode(...data.subarray(i, i + BASE64_CHUNK))
+    }
+    return btoa(binary)
   }
   return Buffer.from(data).toString('base64')
 }
