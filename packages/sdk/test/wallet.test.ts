@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { encodeTx } from '@johnhenry/raijin-core'
+import { encodeTx, verifyEd25519 } from '@johnhenry/raijin-core'
 import { Wallet } from '../src/wallet.js'
 
 // ── Tests ──
@@ -87,5 +87,40 @@ describe('Wallet', () => {
     const sig1 = await wallet.sign(msg)
     const sig2 = await restored.sign(msg)
     expect(sig1).toEqual(sig2)
+  })
+  // Regression: sign() used to pass `message.buffer`, which ignores
+  // byteOffset/byteLength — so any Uint8Array that is a window into a larger
+  // buffer was signed in full. verifyEd25519() passes the view, so the library
+  // rejected its own signatures. See issue #20.
+  it('signs the view, not the whole backing ArrayBuffer', async () => {
+    const wallet = await Wallet.generate()
+
+    const backing = new Uint8Array(64).fill(7)
+    const view = backing.subarray(0, 32)
+    const standalone = new Uint8Array(32).fill(7)
+
+    const sigView = await wallet.sign(view)
+    const sigStandalone = await wallet.sign(standalone)
+
+    // Same 32 bytes, same signature — regardless of what surrounds them.
+    expect(sigView).toEqual(sigStandalone)
+
+    // The library verifies its own signature over the view...
+    expect(await verifyEd25519(view, sigView, wallet.publicKey)).toBe(true)
+    // ...and does NOT accept it over the 64-byte buffer it sits inside.
+    expect(await verifyEd25519(backing, sigView, wallet.publicKey)).toBe(false)
+  })
+
+  it('reimports a PKCS8 key held in a larger buffer', async () => {
+    const wallet = await Wallet.generate()
+    const pkcs8 = await wallet.exportPrivateKey()
+
+    // Same bytes, but as a view with a non-zero byteOffset.
+    const padded = new Uint8Array(pkcs8.length + 16)
+    padded.set(pkcs8, 8)
+    const view = padded.subarray(8, 8 + pkcs8.length)
+
+    const restored = await Wallet.fromKey(view)
+    expect(restored.publicKey).toEqual(wallet.publicKey)
   })
 })

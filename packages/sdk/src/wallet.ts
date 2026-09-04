@@ -46,7 +46,9 @@ export class Wallet implements TransactionSigner {
   static async fromKey(pkcs8: Uint8Array): Promise<Wallet> {
     const privateKey = await globalThis.crypto.subtle.importKey(
       'pkcs8',
-      pkcs8.buffer as ArrayBuffer,
+      // Pass the view, not `.buffer` — a Uint8Array that is a window into a
+      // larger ArrayBuffer would otherwise import the whole buffer.
+      pkcs8 as BufferSource,
       'Ed25519',
       true,
       ['sign'],
@@ -71,7 +73,11 @@ export class Wallet implements TransactionSigner {
     const signature = await globalThis.crypto.subtle.sign(
       'Ed25519',
       this.#privateKey,
-      message.buffer as ArrayBuffer,
+      // Pass the view itself. `message.buffer` ignores byteOffset/byteLength,
+      // so any Uint8Array produced by `subarray()` or backed by a pooled
+      // buffer would be signed in full — bytes the caller never saw, and
+      // bytes `verifyEd25519` (which passes the view) would not verify.
+      message as BufferSource,
     )
     return new Uint8Array(signature)
   }
