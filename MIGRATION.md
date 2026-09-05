@@ -1,10 +1,14 @@
 # Migration notes
 
-## Unreleased → 0.0.1 — every hashed and signed format changed
+## 0.0.0 → 0.0.1 — every hashed and signed format changed
 
 The security work leading to 0.0.1 fixed a family of encoding bugs in which
 two different structures could produce the same bytes, and therefore the same
 hash, signature or Merkle root. Fixing that necessarily changes the bytes.
+
+0.0.0 is the baseline throughout: every unscoped release before it
+(`raijin-core@0.0.1`, `raijin-consensus@0.0.3`, and their siblings) has the
+same formats and the same defects, so everything here applies to those too.
 
 **This is a hard wire-format break.** A node running 0.0.1 and a node running
 an earlier build cannot participate in the same network: they compute
@@ -14,10 +18,12 @@ state roots, so even agreement on a block would leave them on divergent
 chains. There is no compatibility mode and no negotiation. Upgrade every node
 together, from a fresh genesis.
 
-Persisted state must also be discarded. Account records written by an earlier
-build lack the account domain tag and `decodeAccount` now rejects them
-(`RaijinError: Not an account encoding`), and every state root derived from
-them would differ regardless.
+Persisted state must also be discarded, keys as well as values. Account
+records written by an earlier build lack the account domain tag and
+`decodeAccount` now rejects them (`RaijinError: Not an account encoding`), and
+they are filed under the old un-prefixed key layout, so an upgraded node would
+not look them up in the first place. Every state root derived from them would
+differ regardless.
 
 ### Formats that moved
 
@@ -32,6 +38,7 @@ them would differ regardless.
 | `encodeTxSigned` | `encodeTx ‖ signature` | domain tag `0x02` ahead of the same | transaction hashes change: `txRoot` leaves, mempool dedup keys, and the `txHash` on every receipt |
 | `encodeAccount` / `decodeAccount` | three LEB128 fields | domain tag `0x03` ahead of them; the decoder rejects any other tag | stored account records are not readable by the other version, in either direction |
 | `encodeReceipt` | raw concatenation; absent and empty `revertReason` identical | domain tag `0x04`; `revertReason` carries a presence byte | `receiptRoot` changes |
+| State keys (`stateKey`, new export; `accountKey`, new export) | `namespace ‖ id`, concatenated raw | `0x07 ‖ len(namespace) ‖ namespace ‖ len(id) ‖ id` | every key in the store changes, and so does every state root derived from them. Anything that wrote account keys by hand — genesis funding, fixtures, state sync — must switch to `accountKey(address)` |
 | `InMemoryStateStore.root()` | `H(hex(key₀) ‖ value₀ ‖ hex(key₁) ‖ value₁ ‖ …)`, entries ordered by `localeCompare` | `merkleRoot` over `H(encodeStateEntry(key, value))` per entry, ordered by key bytes | every `stateRoot` changes; a `StateStore` implemented elsewhere must use the exported `encodeStateEntry` to agree |
 
 ### Also breaking, though not a byte format
@@ -49,6 +56,15 @@ them would differ regardless.
 - **`ValidatorSet` gained `epoch()`**, an async digest of the exact membership
   and order. It is the epoch every vote is signed against; a `ValidatorSet`
   replacement or wrapper must provide it.
+- **State keys are built by `accountKey`/`stateKey`, exported from
+  `@johnhenry/raijin-core`.** The old layout — a namespace prefix concatenated
+  onto an id — was unambiguous only by coincidence: the shipped namespaces
+  happen to be prefix-free and every id in use happens to be a fixed-width
+  32-byte key. Nothing enforced either. The layout was also duplicated by hand
+  at seven call sites, which is what made it fragile. Replace
+  `new Uint8Array([...encoder.encode('account:'), ...address])` with
+  `accountKey(address)`; `StateNamespace` holds the other namespace prefixes
+  for `stateKey(namespace, id)`.
 - `BlockProducer#advance(block)` returns `Promise<void>` rather than `void` —
   it hashes the parent header. Callers must `await` it.
 - `Wallet` keys are non-extractable by default — `Wallet.generate()` **and
@@ -66,6 +82,37 @@ them would differ regardless.
   explicit codec for environments where the optional fflate import does not
   resolve.
 
+### Also breaking, from the earlier security pass
+
+These landed before the encoding work and are also new to anyone on 0.0.0.
+
+- **`PBFTConfig.verify` is required** — a `SignatureVerifier` used to check
+  every PRE-PREPARE, PREPARE, COMMIT and VIEW-CHANGE. There was previously no
+  such field, because votes were never verified. `ValidatorNode` supplies it
+  from `identity.verify`, which means that one verifier now authenticates
+  consensus votes as well as transactions: a stub that returns `true`
+  unconditionally is no longer merely permissive about transactions, it
+  disables vote authentication.
+- **A receipt's `txHash` is the hash of the *signed* encoding.** It was
+  `hash(encodeTx(tx))` (unsigned); it is now `hash(encodeTxSigned(tx))`, the
+  same identifier used for `txRoot` leaves and mempool keys — one transaction
+  id instead of two. Code correlating submissions with receipts by
+  `hash(encodeTx(tx))` will stop matching. (On top of that, `encodeTxSigned`'s
+  own bytes changed in this release, per the table above.)
+- **`ValidatorNode` runs the real mempool.** `@johnhenry/raijin-validator` no
+  longer defines its own FIFO `Mempool`; it re-exports
+  `@johnhenry/raijin-mempool`'s. Consequences: `submitTransaction()` now
+  **throws** on an invalid signature or a duplicate sender+nonce instead of
+  accepting the transaction and reverting it a block later, ordering is by fee
+  rather than arrival, and a full pool evicts the lowest-fee entry instead of
+  throwing `'Mempool full'`. If you imported `Mempool` from the validator
+  package you now get a different class with a different API (`submit`, not
+  `add`).
+- **Block headers carry real roots.** `stateRoot` and `receiptRoot` are filled
+  in after execution rather than left zero-filled forever. Anything that
+  asserted those fields were zero, or used a header's zeroed state root as an
+  identifier, changes behaviour.
+
 ### Checklist for operators
 
 1. Stop every node. A partial upgrade is worse than a stopped network: the
@@ -77,4 +124,5 @@ them would differ regardless.
    Give every node the same `chainId`, and give two different deployments
    two different ones: that is what now stops votes from one being counted
    by the other.
-4. Re-seed genesis balances with the current `encodeAccount`.
+4. Re-seed genesis balances with the current `encodeAccount`, written under
+   the key `accountKey(address)` returns.

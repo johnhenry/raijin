@@ -2,9 +2,12 @@
  * 05 — PBFT quorum math and a single-validator consensus round
  *      (@johnhenry/raijin-consensus)
  *
- * First: the quorum table. quorum = 2f+1 with f = floor((n-1)/3), so with
- * 1, 2, or 3 validators f = 0 and quorum = 1 — a single node finalizes
- * alone. Byzantine fault tolerance only starts at n = 4.
+ * First: the quorum table. quorum = n - f with f = floor((n-1)/3). At the
+ * canonical sizes (n = 3f+1: 1, 4, 7, ...) that equals 2f+1; everywhere
+ * else it is strictly larger, because 2f+1 is only safe at those sizes —
+ * at n = 2 or 3 it degenerates to quorum 1, letting a single node finalize
+ * alone. Only n = 1 has quorum 1 now. Byzantine fault *tolerance* still
+ * only starts at n = 4, where f first becomes non-zero.
  *
  * Then: a full propose → pre-prepare → prepare → commit → finalize round
  * with one validator (quorum 1), driven entirely in-process. Multi-node
@@ -23,7 +26,16 @@ for (let n = 1; n <= 7; n++) {
     Array.from({ length: n }, (_, i) => new Uint8Array(32).fill(i + 1)),
   )
   console.log(String(n).padStart(2), '|', String(set.maxFaults).padStart(9), '|', set.quorumSize())
+  // Safety needs any two quorums to share an honest node: 2q - n >= f + 1.
+  assert.ok(2 * set.quorumSize() - n >= set.maxFaults + 1, `quorum unsafe at n=${n}`)
+  assert.equal(set.quorumSize(), n - set.maxFaults)
 }
+// Only a one-node set can finalize on one vote.
+assert.equal(new ValidatorSet([new Uint8Array(32).fill(1)]).quorumSize(), 1)
+assert.equal(
+  new ValidatorSet([1, 2, 3].map((i) => new Uint8Array(32).fill(i))).quorumSize(),
+  3,
+)
 
 // ── Single-validator round ────────────────────────────────────────────
 const me = new Uint8Array(32).fill(7)

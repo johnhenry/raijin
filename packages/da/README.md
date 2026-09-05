@@ -22,7 +22,9 @@ npm install @johnhenry/raijin-da
 Other traps:
 
 - **`EthBlobDA` throws on every method.** It exists to pin the interface and document the implementation path (viem blob transactions, KZG setup, Beacon API retrieval); the error messages are the TODO list. Ethereum blobs are also pruned after ~18 days — plan for archival.
-- **`encode()` output depends on the environment.** If the optional `fflate` package is importable, payloads that shrink get deflate-compressed with an `RJC` magic prefix; otherwise raw bytes with `RJR`. `decode()` of an `RJC` payload **throws if fflate is absent** — if writers may compress, every reader needs fflate too.
+- **`encode()` output depends on the environment.** If the optional `fflate` package is importable, payloads that shrink get deflate-compressed with an `RJC` magic prefix; otherwise raw bytes with `RJR`. `decode()` of an `RJC` payload throws if fflate is absent **and** no `inflate` was supplied — if writers may compress, every reader needs fflate or an explicit codec (`decode(data, { inflate })`).
+- **`decode()` caps its output at 16 MiB.** DA bytes are by definition untrusted, and DEFLATE reaches roughly 1000:1 on repetitive input, so a few kilobytes can ask for gigabytes. Oversized payloads are refused with `DASizeLimitError`. Raise it per call with `decode(data, { maxDecompressedSize })` if a payload is genuinely expected to be larger.
+- **`CelestiaDA` refuses to send an auth token over cleartext `http:`** to a non-loopback host — the node token is a node credential and usually carries write access. Use `https:`, a loopback host (the default `http://localhost:26658` is fine), or opt in explicitly with `allowInsecureAuth: true`.
 - **`CelestiaDA` needs a running light node** (default endpoint `http://localhost:26658`, usually with an auth token). It does not embed one.
 
 ## Quick start
@@ -46,8 +48,9 @@ import { CelestiaDA } from '@johnhenry/raijin-da'
 
 const da = new CelestiaDA({
   namespace: '00c0ffee00c0ffee',      // required, 8-byte hex namespace
-  endpoint: 'http://localhost:26658', // default
+  endpoint: 'http://localhost:26658', // default; loopback, so cleartext is OK
   authToken: process.env.CELESTIA_NODE_AUTH_TOKEN,
+  // allowInsecureAuth: true,         // only for a non-loopback http: endpoint
 })
 ```
 
@@ -72,15 +75,28 @@ In-memory, content-addressed blob store. `retrieve()` throws for unknown hashes;
 
 ### `CelestiaDA` / `CelestiaDAOptions`
 
-Client for the Celestia Node REST API (`submit_pfb`, `namespaced_data`). `submit()` posts to your namespace and returns the inclusion height; `retrieve()` scans the namespace at that height for a blob matching the commitment hash; `verify()` is retrieve-and-rehash (network errors ⇒ `false`, not an exception). Options: `namespace` (required), `endpoint`, `authToken`.
+Client for the Celestia Node REST API (`submit_pfb`, `namespaced_data`). `submit()` posts to your namespace and returns the inclusion height; `retrieve()` scans the namespace at that height for a blob matching the commitment hash; `verify()` is retrieve-and-rehash (network errors ⇒ `false`, not an exception). Options: `namespace` (required), `endpoint`, `authToken`, `allowInsecureAuth`.
+
+The constructor **throws** if an `authToken` is set and `endpoint` is `http:` on a non-loopback host, unless `allowInsecureAuth: true` is passed. The namespace is percent-encoded into the request path, so a caller-supplied namespace cannot rewrite the URL and carry the token to a different route.
 
 ### `EthBlobDA` / `EthBlobDAOptions`
 
 The stub. Options (`rpcUrl`, `beaconUrl`, `chainId`) are accepted and stored; `submit`/`retrieve`/`verify` throw with step-by-step implementation requirements. Read the source of `eth-blobs.ts` for a complete viem-based sketch.
 
-### `encode(data)` / `decode(data)`
+### `encode(data, opts?)` / `decode(data, opts?)`
 
-3-byte magic header (`RJC` compressed / `RJR` raw) + payload. Compression is used only when fflate is available **and** actually shrinks the payload. `decode()` throws on missing/unknown magic and on compressed data without fflate.
+Frame layout:
+
+- raw: `"RJR" ‖ data`
+- compressed: `"RJC" ‖ LEB128(decompressed length) ‖ deflate(data)`
+
+The compressed frame carries the **decompressed** length so `decode()` can refuse an oversized payload before allocating for it. Compression is used only when a deflater is available **and** the whole frame (length header included) actually shrinks the payload.
+
+`decode()` never returns more than `maxDecompressedSize` bytes (default `MAX_DECOMPRESSED_SIZE`, 16 MiB) — the declared length is checked against the cap before inflating, the inflater is then bounded by that declared length, and the result is checked again in case the inflater ignored its bound. Both branches are capped, so `decode` has one postcondition regardless of which frame it got.
+
+Errors: every rejection is a `DADecodeError` (missing/unknown magic, a truncated frame, a failure inside the compression library, which is wrapped rather than propagated raw), and size refusals are a `DASizeLimitError` subclass carrying `limit` and `requested`.
+
+Options: `encode(data, { deflate })` and `decode(data, { maxDecompressedSize, inflate })`. Supply a codec explicitly for environments where the optional fflate import does not resolve; an `Inflate` must honour its `limit` argument as a memory bound, not a post-hoc truncation.
 
 ## Wiring DA into a validator
 
