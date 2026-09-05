@@ -2,8 +2,18 @@
  * Test helpers: mock transport, timer, and multi-peer simulation.
  */
 
-import type { NetworkTransport, ConsensusMessage, ConsensusTimer, TimerHandle } from '../src/types.js'
-import type { SignatureVerifier } from '@johnhenry/raijin-core'
+import type {
+  NetworkTransport,
+  ConsensusMessage,
+  ConsensusTimer,
+  TimerHandle,
+  PrepareMessage,
+  CommitMessage,
+} from '../src/types.js'
+import type { SignatureVerifier, Block } from '@johnhenry/raijin-core'
+import { hash, encodeBlockHeader } from '@johnhenry/raijin-core'
+import { voteDigest, NO_BLOCK_DIGEST, type VotePhase } from '../src/vote.js'
+import { ValidatorSet } from '../src/validator-set.js'
 
 /** In-memory transport that connects multiple peers. Tracks pending async work. */
 export class MockNetwork {
@@ -232,5 +242,264 @@ export class DeterministicNetwork {
   /** Disconnect a peer (simulates crash). */
   disconnect(peerId: Uint8Array): void {
     this.#peers.delete(toHex(peerId))
+  }
+}
+
+// ── Byzantine peers ───────────────────────────────────────────────────
+
+/**
+ * A validator that lies.
+ *
+ * Crash faults are the easy half of the fault model and the only half the
+ * rest of this harness models: a crashed node *stops*. A Byzantine node
+ * keeps sending — it just sends things a correct implementation never
+ * would. It holds a real key, so every message it emits carries a
+ * genuinely valid signature; authentication is not the thing that stops
+ * it. What stops it is quorum intersection and the three-phase commit,
+ * and that is what these peers exist to test.
+ *
+ * `ByzantinePeer` is deliberately *not* a `PBFTConsensus`. It has no
+ * phase, no state machine and no notion of correctness — it is a raw
+ * transport plus a signing key plus the ability to address individual
+ * peers. Anything the wire format permits, it can say.
+ *
+ * The primitives below cover the attacks worth testing:
+ *  - `prePrepare`/`prepare`/`commit`/`viewChange` — correctly-signed votes
+ *    sent to a *chosen subset* of peers rather than broadcast, which is
+ *    all equivocation actually is.
+ *  - `equivocate` — the canonical Byzantine leader: two different blocks
+ *    proposed at the same (view, sequence) to two disjoint groups.
+ *  - `replayAs` — take a vote it overheard and re-emit it under a
+ *    different phase, view or sequence, keeping the original signature.
+ *  - `received` — everything it overheard, so a test can replay real
+ *    traffic rather than hand-built messages.
+ */
+export class ByzantinePeer {
+  readonly publicKey: Uint8Array
+  /** Every message this peer overheard, in delivery order. */
+  readonly received: Array<{ from: Uint8Array; msg: ConsensusMessage }> = []
+
+  #transport: NetworkTransport
+  #sign: (message: Uint8Array) => Promise<Uint8Array>
+  #spoof: ((identity: Uint8Array) => NetworkTransport) | null
+  #chainId: bigint
+  #validators: ValidatorSet
+
+  /**
+   * @param chainId     The deployment this peer is voting in. Required for
+   *                    the same reason `PBFTConsensus` requires it: a vote
+   *                    that does not name its chain is replayable into every
+   *                    other chain that shares a validator.
+   * @param validators  The validator set this peer is voting under; its
+   *                    `epoch()` goes into every signed payload. A liar that
+   *                    signed under a different set would simply produce
+   *                    invalid signatures, which tests nothing.
+   * @param listen      Register a message handler so the peer receives
+   *                    broadcasts. Required for replay attacks (it has to
+   *                    hear a vote before it can re-emit one) and for the
+   *                    peer to be a broadcast target at all.
+   * @param spoof       A factory for a transport that reports an arbitrary
+   *                    sender id — pass `(id) => network.createTransport(id)`.
+   *
+   *                    This models a transport that does not authenticate its
+   *                    peers: a relay, a gossip hub, a signalling server
+   *                    forwarding a self-declared id. `PBFTConsensus` is
+   *                    written for exactly that world — it takes the `from`
+   *                    the transport hands it as a *claim* and makes every
+   *                    message carry a signature over `voteDigest(...)` to
+   *                    settle it. Without a spoofing transport a test cannot
+   *                    reach those checks at all, because the in-memory
+   *                    networks here bind `from` to the transport that sent
+   *                    the message and so authenticate every peer for free.
+   */
+  constructor(
+    publicKey: Uint8Array,
+    transport: NetworkTransport,
+    opts: {
+      chainId: bigint
+      validators: ValidatorSet
+      listen?: boolean
+      spoof?: (identity: Uint8Array) => NetworkTransport
+    },
+  ) {
+    this.publicKey = publicKey
+    this.#transport = transport
+    this.#sign = mockSign(publicKey)
+    this.#spoof = opts.spoof ?? null
+    this.#chainId = opts.chainId
+    this.#validators = opts.validators
+    if (opts.listen ?? true) {
+      this.#transport.onMessage((from, msg) => {
+        this.received.push({ from, msg })
+      })
+    }
+  }
+
+  /** The digest PBFT agrees on for a block: `H(encodeBlockHeader(header))`. */
+  static async digestOf(block: Block): Promise<Uint8Array> {
+    return hash(encodeBlockHeader(block.header))
+  }
+
+  /** Sign one vote exactly as an honest validator would. */
+  async signVote(
+    phase: VotePhase,
+    view: bigint,
+    sequence: bigint,
+    digest: Uint8Array,
+  ): Promise<Uint8Array> {
+    return this.#sign(
+      await voteDigest({
+        phase,
+        chainId: this.#chainId,
+        epoch: await this.#validators.epoch(),
+        view,
+        sequence,
+        digest,
+      }),
+    )
+  }
+
+  /** Send a fully-formed message to exactly one peer. */
+  sendTo(to: Uint8Array, msg: ConsensusMessage): void {
+    this.#transport.send(to, msg)
+  }
+
+  /** Send a fully-formed message to a chosen subset of peers. */
+  sendToAll(targets: Uint8Array[], msg: ConsensusMessage): void {
+    for (const to of targets) this.#transport.send(to, msg)
+  }
+
+  /** A validly-signed PRE-PREPARE for `block`, sent only to `targets`. */
+  async prePrepare(
+    targets: Uint8Array[],
+    view: bigint,
+    sequence: bigint,
+    block: Block,
+  ): Promise<Uint8Array> {
+    const digest = await ByzantinePeer.digestOf(block)
+    this.sendToAll(targets, {
+      type: 'pre-prepare',
+      view,
+      sequence,
+      block,
+      digest,
+      from: this.publicKey,
+      signature: await this.signVote('pre-prepare', view, sequence, digest),
+    })
+    return digest
+  }
+
+  /** A validly-signed PREPARE, sent only to `targets`. */
+  async prepare(
+    targets: Uint8Array[],
+    view: bigint,
+    sequence: bigint,
+    digest: Uint8Array,
+  ): Promise<void> {
+    this.sendToAll(targets, {
+      type: 'prepare',
+      view,
+      sequence,
+      digest,
+      from: this.publicKey,
+      signature: await this.signVote('prepare', view, sequence, digest),
+    })
+  }
+
+  /** A validly-signed COMMIT, sent only to `targets`. */
+  async commit(
+    targets: Uint8Array[],
+    view: bigint,
+    sequence: bigint,
+    digest: Uint8Array,
+  ): Promise<void> {
+    this.sendToAll(targets, {
+      type: 'commit',
+      view,
+      sequence,
+      digest,
+      from: this.publicKey,
+      signature: await this.signVote('commit', view, sequence, digest),
+    })
+  }
+
+  /** A validly-signed VIEW-CHANGE, sent only to `targets`. */
+  async viewChange(
+    targets: Uint8Array[],
+    newView: bigint,
+    sequence: bigint,
+  ): Promise<void> {
+    this.sendToAll(targets, {
+      type: 'view-change',
+      newView,
+      sequence,
+      from: this.publicKey,
+      signature: await this.signVote('view-change', newView, sequence, NO_BLOCK_DIGEST),
+    })
+  }
+
+  /**
+   * The canonical Byzantine leader: propose two *different* blocks at the
+   * same view and sequence to two disjoint groups, and back each with the
+   * leader's own PREPARE (and optionally COMMIT) so each group sees a
+   * self-consistent round.
+   *
+   * Every message is correctly signed. Nothing here is malformed; the lie
+   * is entirely in who is told what.
+   */
+  async equivocate(opts: {
+    view: bigint
+    sequence: bigint
+    groups: Array<{ targets: Uint8Array[]; block: Block }>
+    /** Also send the leader's COMMIT to each group. Default: true. */
+    commit?: boolean
+  }): Promise<Uint8Array[]> {
+    const digests: Uint8Array[] = []
+    for (const group of opts.groups) {
+      const digest = await this.prePrepare(group.targets, opts.view, opts.sequence, group.block)
+      await this.prepare(group.targets, opts.view, opts.sequence, digest)
+      if (opts.commit ?? true) {
+        await this.commit(group.targets, opts.view, opts.sequence, digest)
+      }
+      digests.push(digest)
+    }
+    return digests
+  }
+
+  /**
+   * Re-emit a vote this peer overheard, keeping the ORIGINAL sender and
+   * the ORIGINAL signature, but changing the phase (and optionally the view
+   * or sequence).
+   *
+   * This is the attack the domain-separated `voteDigest` exists to stop: a
+   * PREPARE is broadcast to everyone, so if PREPARE and COMMIT sign the
+   * same bytes, holding someone's PREPARE means holding their COMMIT.
+   */
+  replayAs(
+    targets: Uint8Array[],
+    original: PrepareMessage | CommitMessage,
+    as: { type: 'prepare' | 'commit'; view?: bigint; sequence?: bigint },
+  ): void {
+    const msg = {
+      type: as.type,
+      view: as.view ?? original.view,
+      sequence: as.sequence ?? original.sequence,
+      digest: original.digest,
+      from: original.from,
+      signature: original.signature,
+    } as ConsensusMessage
+    // Send it under the ORIGINAL signer's id if a spoofing transport was
+    // supplied — a replay that announces itself as coming from the attacker
+    // is not a replay, it is a signature the receiver will check against the
+    // wrong key. See the `spoof` option.
+    const via = this.#spoof ? this.#spoof(original.from) : this.#transport
+    for (const to of targets) via.send(to, msg)
+  }
+
+  /** Every PREPARE this peer overheard. */
+  overheardPrepares(): PrepareMessage[] {
+    return this.received
+      .map((r) => r.msg)
+      .filter((m): m is PrepareMessage => m.type === 'prepare')
   }
 }
