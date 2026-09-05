@@ -5,7 +5,7 @@
  * 1. Leader proposes a block (PRE-PREPARE)
  * 2. Validators acknowledge (PREPARE)
  * 3. Validators commit (COMMIT)
- * 4. Block is finalized when 2f+1 commits are collected
+ * 4. Block is finalized when a quorum of `n - f` commits is collected
  *
  * View changes handle leader failure: if the leader doesn't propose
  * within the timeout, validators request a view change to rotate
@@ -13,7 +13,7 @@
  */
 
 import type { Block, StateMachine, TransactionReceipt, SignatureVerifier } from '@johnhenry/raijin-core'
-import { hash, merkleRoot, encodeReceipt, equal, toHex } from '@johnhenry/raijin-core'
+import { hash, merkleRoot, encodeReceipt, encodeBlockHeader, equal, toHex } from '@johnhenry/raijin-core'
 import { ValidatorSet } from './validator-set.js'
 import { voteDigest, NO_BLOCK_DIGEST, type VotePhase } from './vote.js'
 import type {
@@ -32,6 +32,15 @@ import { PBFTPhase } from './types.js'
 export interface PBFTConfig {
   /** This node's public key. */
   identity: Uint8Array
+  /**
+   * Chain identifier — which deployment this node's votes are about.
+   *
+   * Required, with no default, for the same reason `chainId` is required on
+   * a transaction: a default is an id that every deployment which never
+   * chose one shares, and votes would then replay verbatim between them.
+   * Every vote signature covers it (see `voteDigest`).
+   */
+  chainId: bigint
   /** The validator set. */
   validators: ValidatorSet
   /** Network transport for sending/receiving messages. */
@@ -53,8 +62,9 @@ export interface PBFTConfig {
    * `#handleMessage` could forge votes on behalf of any validator.
    *
    * Every vote is signed over a domain-separated payload (see `voteDigest`)
-   * that names the phase, the view and the sequence, so no signature is
-   * reusable in another phase or another round.
+   * that names the chain, the validator-set epoch, the phase, the view and
+   * the sequence, so no signature is reusable in another phase, another
+   * round, another chain, or across a membership change.
    */
   verify: SignatureVerifier
 }
@@ -62,6 +72,7 @@ export interface PBFTConfig {
 export class PBFTConsensus {
   #identity: Uint8Array
   #identityHex: string
+  #chainId: bigint
   #validators: ValidatorSet
   #transport: NetworkTransport
   #timer: ConsensusTimer
@@ -103,8 +114,16 @@ export class PBFTConsensus {
   #onViewChange: ((newView: bigint) => void)[] = []
 
   constructor(config: PBFTConfig) {
+    // Guard the JS callers the type system does not reach: an undefined
+    // chainId would otherwise be signed as a chain id of its own, and every
+    // node that forgot one would agree with every other node that forgot one.
+    if (typeof config.chainId !== 'bigint') {
+      throw new TypeError('PBFTConsensus: chainId is required and must be a bigint')
+    }
+
     this.#identity = config.identity
     this.#identityHex = toHex(config.identity)
+    this.#chainId = config.chainId
     this.#validators = config.validators
     this.#transport = config.transport
     this.#timer = config.timer
@@ -250,7 +269,7 @@ export class PBFTConsensus {
     if (!(await this.#verifyVote('pre-prepare', msg.view, msg.sequence, digest, msg.signature, from))) return
 
     // Partial view-change safety mitigation: if this sequence was already
-    // validly prepared (2f+1 PREPARE votes) at some prior view, refuse to
+    // validly prepared (a quorum of PREPARE votes) at some prior view, refuse to
     // accept a *different* block for the same sequence. We can't yet
     // automatically carry the old block forward, but we must not let a new
     // leader silently override an already-prepared one. See #doViewChange.
@@ -326,7 +345,7 @@ export class PBFTConsensus {
    * VIEW-CHANGE messages is observed — see #handleViewChange), but the
    * message type is part of the wire protocol and a malicious or buggy peer
    * could send one unsolicited. We must not act on it unless it's actually
-   * backed by a real quorum (2f+1) of validly-signed, distinct-sender
+   * backed by a real quorum (`n - f`) of validly-signed, distinct-sender
    * VIEW-CHANGE messages agreeing on the claimed view — otherwise a single
    * validator could force every other node to jump views at will.
    */
@@ -420,8 +439,10 @@ export class PBFTConsensus {
     // executed the block, fill in the real values. This doesn't change the
     // already-agreed digest (nothing re-verifies it after this point); it
     // only affects the finalized block object used for chain linkage
-    // (BlockProducer#advance reads `header.stateRoot` as the next block's
-    // parentHash) and for fork/convergence detection in the test harness.
+    // (BlockProducer#advance hashes this completed header with `blockHash`
+    // to get the next block's parentHash, so the link covers the executed
+    // result as well as the proposal) and for fork/convergence detection in
+    // the test harness.
     this.#pendingBlock.header.stateRoot = await this.#stateMachine.stateRoot()
     this.#pendingBlock.header.receiptRoot = await this.#computeReceiptRoot(receipts)
 
@@ -528,34 +549,35 @@ export class PBFTConsensus {
 
   // ── Helpers ─────────────────────────────────────────────────────────
 
+  /** Header bytes the consensus digest is taken over. Shared with
+   *  `blockHash`, so the bytes nodes agree on and the bytes that link a block
+   *  to its child are the same bytes. */
   #serializeBlockHeader(block: Block): Uint8Array {
-    // Deterministic serialization of block header fields
-    const parts: Uint8Array[] = [
-      this.#bigintToBytes(block.header.number),
-      block.header.parentHash,
-      block.header.stateRoot,
-      block.header.txRoot,
-      block.header.receiptRoot,
-      this.#bigintToBytes(BigInt(block.header.timestamp)),
-      block.header.proposer,
-    ]
-    const totalLen = parts.reduce((sum, p) => sum + p.length, 0)
-    const result = new Uint8Array(totalLen)
-    let pos = 0
-    for (const part of parts) {
-      result.set(part, pos)
-      pos += part.length
-    }
-    return result
+    return encodeBlockHeader(block.header)
   }
 
-  #bigintToBytes(value: bigint): Uint8Array {
-    const hex = value.toString(16).padStart(16, '0')
-    const bytes = new Uint8Array(8)
-    for (let i = 0; i < 8; i++) {
-      bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
-    }
-    return bytes
+  /**
+   * The bytes of one vote (see `voteDigest`).
+   *
+   * `chainId` and the validator-set `epoch` come from *this* node, never from
+   * the message. That is what makes them scope rather than metadata: a peer
+   * cannot tell us which chain or which set its vote should count under, it
+   * can only produce a signature that either matches ours or does not.
+   */
+  async #voteBytes(
+    phase: VotePhase,
+    view: bigint,
+    sequence: bigint,
+    digest: Uint8Array,
+  ): Promise<Uint8Array> {
+    return voteDigest({
+      phase,
+      chainId: this.#chainId,
+      epoch: await this.#validators.epoch(),
+      view,
+      sequence,
+      digest,
+    })
   }
 
   /** Sign one vote over its domain-separated payload (see `voteDigest`). */
@@ -565,7 +587,7 @@ export class PBFTConsensus {
     sequence: bigint,
     digest: Uint8Array,
   ): Promise<Uint8Array> {
-    return this.#sign(await voteDigest(phase, view, sequence, digest))
+    return this.#sign(await this.#voteBytes(phase, view, sequence, digest))
   }
 
   /** Verify one vote's signature against the claimed signer. */
@@ -577,6 +599,10 @@ export class PBFTConsensus {
     signature: Uint8Array,
     signer: Uint8Array,
   ): Promise<boolean> {
-    return this.#verify.verify(await voteDigest(phase, view, sequence, digest), signature, signer)
+    return this.#verify.verify(
+      await this.#voteBytes(phase, view, sequence, digest),
+      signature,
+      signer,
+    )
   }
 }

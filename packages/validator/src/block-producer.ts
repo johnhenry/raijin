@@ -4,7 +4,7 @@
  */
 
 import type { Block, Transaction } from '@johnhenry/raijin-core'
-import { hash, merkleRoot, encodeTxSigned } from '@johnhenry/raijin-core'
+import { hash, merkleRoot, encodeTxSigned, blockHash } from '@johnhenry/raijin-core'
 import type { PBFTConsensus } from '@johnhenry/raijin-consensus'
 import type { Mempool } from '@johnhenry/raijin-mempool'
 
@@ -25,7 +25,7 @@ export class BlockProducer {
   #mempool: Mempool
   #maxTxPerBlock: number
   #nextBlockNumber = 1n
-  #parentHash = new Uint8Array(32)
+  #parentHash: Uint8Array = new Uint8Array(32)
 
   constructor(config: BlockProducerConfig) {
     this.#proposer = config.proposer
@@ -46,12 +46,23 @@ export class BlockProducer {
     return block
   }
 
-  /** Update state after a block is finalized. */
-  advance(block: Block): void {
+  /**
+   * Update state after a block is finalized.
+   *
+   * `parentHash` is the parent's canonical block hash -- SHA-256 over its
+   * encoded header. It used to be the parent's *state root*, which commits to
+   * the resulting account state and to nothing else: not the transactions, the
+   * proposer, the timestamp, the txRoot or the receiptRoot. Two different
+   * blocks leaving the same post-state (any two blocks whose transactions all
+   * revert, for instance) were then indistinguishable as parents, and an empty
+   * block's child pointed at a hash equal to the block's own.
+   *
+   * `advance()` runs after PBFT has filled in the real stateRoot and
+   * receiptRoot, so the hash covers the executed result.
+   */
+  async advance(block: Block): Promise<void> {
     this.#nextBlockNumber = block.header.number + 1n
-    // Use a hash of the block number as parent hash (simplified)
-    // In production, this would be the actual block hash
-    this.#parentHash = new Uint8Array(block.header.stateRoot)
+    this.#parentHash = await blockHash(block)
   }
 
   /** Current next block number. */

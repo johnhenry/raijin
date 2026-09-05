@@ -143,6 +143,38 @@ describe('Wallet', () => {
       expect(sig.length).toBe(64)
     })
 
+    // `fromKey` is the persistence path — the one a key comes *back* through
+    // — and it hardcoded `extractable: true`, so every restored wallet could
+    // be re-exported by anything in the origin. See issue #23.
+    it('imports a non-extractable private key by default', async () => {
+      const source = await Wallet.generate({ extractable: true })
+      const pkcs8 = await source.exportPrivateKey()
+
+      const restored = await Wallet.fromKey(pkcs8)
+      await expect(restored.exportPrivateKey()).rejects.toThrow(/non-extractable/)
+    })
+
+    it('imports an extractable key only when the call site asks', async () => {
+      const source = await Wallet.generate({ extractable: true })
+      const pkcs8 = await source.exportPrivateKey()
+
+      const restored = await Wallet.fromKey(pkcs8, { extractable: true })
+      const reexported = await restored.exportPrivateKey()
+      expect(reexported).toEqual(pkcs8)
+    })
+
+    it('a default-imported wallet still signs, and signs identically', async () => {
+      const source = await Wallet.generate({ extractable: true })
+      const pkcs8 = await source.exportPrivateKey()
+      const restored = await Wallet.fromKey(pkcs8)
+
+      // Non-extractable costs nothing at the point of use: same public key,
+      // same signatures. Only `exportPrivateKey` is closed off.
+      expect(restored.publicKey).toEqual(source.publicKey)
+      const msg = new Uint8Array([9, 8, 7])
+      expect(await restored.sign(msg)).toEqual(await source.sign(msg))
+    })
+
     it('refuses to build a transaction with no chainId', async () => {
       const wallet = await Wallet.generate()
       await expect(

@@ -33,6 +33,18 @@ jobs:
         run: npm run typecheck
 
       - name: Publish packages
-        run: npm publish --workspaces --access public
+        # Dependency order, not alphabetical. `npm publish --workspaces`
+        # iterates alphabetically -- consensus before core -- and every
+        # dependent now requires `@johnhenry/raijin-core@^0.0.1`, which does
+        # not exist on the registry until core itself is published. Publishing
+        # out of order fails the dependent, or worse, resolves an older core.
+        # `raijin-test-harness` is private and npm skips it on its own.
+        run: |
+          npm publish -w @johnhenry/raijin-core      --access public
+          npm publish -w @johnhenry/raijin-consensus --access public
+          npm publish -w @johnhenry/raijin-mempool   --access public
+          npm publish -w @johnhenry/raijin-da        --access public
+          npm publish -w @johnhenry/raijin-sdk       --access public
+          npm publish -w @johnhenry/raijin-validator --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

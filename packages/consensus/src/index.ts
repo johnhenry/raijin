@@ -27,4 +27,4 @@ export type {
 export { PBFTPhase } from './types.js'
 
 export { voteDigest, NO_BLOCK_DIGEST } from './vote.js'
-export type { VotePhase } from './vote.js'
+export type { VotePhase, Vote } from './vote.js'

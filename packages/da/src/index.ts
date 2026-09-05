@@ -20,4 +20,6 @@ export { EthBlobDA } from './eth-blobs.js'
 export type { EthBlobDAOptions } from './eth-blobs.js'
 
 // Encoding
-export { encode, decode } from './encoding.js'
+export { encode, decode, MAX_DECOMPRESSED_SIZE } from './encoding.js'
+export { DADecodeError, DASizeLimitError } from './encoding.js'
+export type { EncodeOptions, DecodeOptions, Deflate, Inflate } from './encoding.js'

@@ -17,7 +17,7 @@ npm install @johnhenry/raijin-mempool
 1. **It collides with the state machine's convention.** `@johnhenry/raijin-core`'s `StateMachine` treats `tx.data[0]` as the transaction *type*. A `data` layout can't serve both defaults at once — if your transactions carry typed data, supply your own `FeeExtractor` (e.g. `(tx) => tx.value` for tip-style fees).
 2. **The config doc-comment in older builds says the default is `tx.value`. It is not.** The default is the 8-byte data prefix; verify with `defaultFeeExtractor(tx)` if in doubt.
 
-Also note: this package is standalone. `@johnhenry/raijin-validator` ships its **own, different `Mempool`** (FIFO, no verification, throws when full) and uses that one internally — see "Which mempool am I holding?" below.
+This pool *is* the one `@johnhenry/raijin-validator` runs. It used to ship a second, simpler class of the same name; it no longer does, and `Mempool` imported from either package is now this implementation — see "Which mempool am I holding?" below.
 
 ## Quick start
 
@@ -85,15 +85,16 @@ pool.removeBatch(block.transactions)               // prune by sender+nonce
 
 ## Which mempool am I holding?
 
-| | `@johnhenry/raijin-mempool` `Mempool` | `@johnhenry/raijin-validator` `Mempool` |
-| --- | --- | --- |
-| Ordering | fee-descending | FIFO |
-| Signature check | yes, injected verifier | none |
-| Full pool | evict lowest / reject | `throw new Error('Mempool full')` |
-| Submit API | `submit(tx) → boolean` | `add(tx) → tx-hash hex` |
-| Used by `ValidatorNode` | no | yes |
+One implementation, two import paths. `@johnhenry/raijin-validator` re-exports this class:
 
-They share a name and nothing else. If you want fee ordering inside a validator today, you wire it yourself (the fee-ordered pool is not yet integrated into `ValidatorNode`).
+```js
+import { Mempool } from '@johnhenry/raijin-mempool'   // same class
+import { Mempool } from '@johnhenry/raijin-validator' // as this one
+```
+
+This was not always true, and older documentation says so: `raijin-validator` used to define its own FIFO `Mempool` with no signature verification that threw when full, and `ValidatorNode` used that one. It doesn't exist any more. `ValidatorNode` now constructs *this* pool, with `maxSize: maxMempoolSize` and a verifier built from the node's `identity.verify` — the same `SignatureVerifier` the state machine uses — so a transaction with a bad signature is rejected at `submitTransaction()` rather than becoming a revert receipt one block later.
+
+Fee ordering is therefore active inside a validator by default. The one thing to watch is the fee convention above: `defaultFeeExtractor` reads `tx.data`'s first 8 bytes, which collide with the state machine's type byte, so supply your own `FeeExtractor` if your transactions carry typed data.
 
 ## Provenance
 

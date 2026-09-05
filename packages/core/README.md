@@ -28,8 +28,8 @@ Failed transactions do not throw — they return `status: 'revert'` receipts wit
 
 - **Everything is async.** Hashing goes through `crypto.subtle`, so `hash`, `merkleRoot`, `stateRoot`, and every state-machine call return promises.
 - **The first byte of `tx.data` selects the transaction type.** Empty `data` defaults to `Transfer`. Only `Transfer` (0x01) and `ReputationAttest` (0x02) execute real logic today; every other `TransactionType` value is a placeholder that just increments the sender's nonce.
-- **`InMemoryStateStore.root()` is a flat hash of all entries, not a Merkle trie.** It's deterministic and good for equality checks across nodes, but it cannot produce inclusion proofs.
-- **Byte-identity everywhere.** Addresses are 32-byte public keys as `Uint8Array`s; account state lives under namespaced keys like `'account:' + pubkey`. Seed genesis balances with `encodeAccount` + `store.put` (see [`examples/02-state-machine.mjs`](https://github.com/johnhenry/raijin/blob/main/examples/02-state-machine.mjs)).
+- **`InMemoryStateStore.root()` is a Merkle root over the store's entries.** Each key→value pair is hashed through `encodeStateEntry` (domain-tagged, both fields length-prefixed) and the entry hashes are combined with `merkleRoot`, ordered by the key's bytes. It uniquely commits to the store's contents — but there is still no inclusion-proof API, so it is a commitment, not a queryable trie.
+- **Byte-identity everywhere.** Addresses are 32-byte public keys as `Uint8Array`s; account state lives under namespaced keys. Build those keys with `accountKey(address)` — never by concatenating a prefix yourself, since the key bytes are hashed into the state root. Seed genesis balances with `accountKey` + `encodeAccount` + `store.put` (see [`examples/02-state-machine.mjs`](https://github.com/johnhenry/raijin/blob/main/examples/02-state-machine.mjs)).
 
 ## API
 
@@ -73,25 +73,44 @@ toHex(root) // '9c31…'
 ```
 
 - `hash(data)` / `hashString(str)` — SHA-256, returns 32 bytes.
-- `merkleRoot(leaves)` — binary tree over leaf hashes; odd levels duplicate the last leaf. A single leaf is returned **as-is** (no extra hash), and `[]` yields `hash(empty)`. There is no leaf/node domain separation — don't use this where second-preimage games matter.
+- `merkleRoot(leaves)` — binary tree over leaf hashes, domain-separated: leaves are `H(0x00 ‖ leaf)`, internal nodes `H(0x01 ‖ left ‖ right)`. An odd level **promotes** its last node rather than pairing it with itself, and `[]` yields `H(0x00)`. Together these make the root a unique commitment to the leaf list: without them the tree has the CVE-2012-2459 shape, where `[A, B, C]` pads to `[A, B, C, C]` and both produce the same root.
 - `equal(a, b)` — byte-wise comparison (not constant-time).
 - `toHex` / `fromHex` — lowercase hex round-trip.
 
-### Encoding — `encodeBigInt`, `decodeBigInt`, `encodeBytes`, `decodeBytes`, `encodeTx`, `encodeTxSigned`, `encodeAccount`, `decodeAccount`
+### Encoding — `encodeBigInt`, `decodeBigInt`, `encodeBytes`, `decodeBytes`, `encodeTx`, `encodeTxSigned`, `encodeAccount`, `decodeAccount`, `encodeReceipt`, `encodeStateEntry`, `encodeBlockHeader`, `blockHash`, `Domain`
 
-Deterministic canonical binary encoding (LEB128 varints + length prefixes). `encodeTx(tx)` covers everything **except** the signature — it's the exact byte string that gets signed and that receipts hash. `encodeTxSigned(tx)` appends the signature and is what block producers hash for the tx Merkle root. The decoders return `[value, bytesConsumed]` pairs.
+Deterministic canonical binary encoding. Two rules hold throughout, and they are what make an encoding a *commitment* rather than merely a serialization:
+
+1. **Every variable-length field carries its length** (LEB128), so concatenation never loses the boundary between adjacent fields.
+2. **Every distinct structure carries a one-byte domain tag**, so one kind of encoding cannot be reinterpreted as another. The tags live in the `Domain` registry: `Transaction` 0x01, `SignedTransaction` 0x02, `Account` 0x03, `Receipt` 0x04, `BlockHeader` 0x05, `StateEntry` 0x06, `StateKey` 0x07. They are consensus-critical — never reuse or renumber one.
+
+- `encodeTx(tx)` covers everything **except** the signature; it is the exact byte string that gets signed.
+- `encodeTxSigned(tx)` wraps that plus the signature, and its hash is the canonical transaction identifier — block `txRoot` leaves, mempool dedup keys, and the `txHash` on every receipt.
+- `encodeBlockHeader(header)` / `blockHash(block)` — one definition of a header's bytes, used both for the consensus digest and for the block hash a child's `parentHash` must equal. `blockHash` is `H(encodeBlockHeader(header))`.
+- `encodeStateEntry(key, value)` — exported so that *any* `StateStore` implementation derives the same state root from the same contents. A store that invents its own layout forks from the ones that don't.
+- `decodeAccount` rejects bytes that are not tagged `Domain.Account` rather than misreading them.
+- The decoders return `[value, bytesConsumed]` pairs.
+
+### State keys — `accountKey`, `stateKey`, `StateNamespace`
+
+A state key is `0x07 ‖ len(namespace) ‖ namespace ‖ len(id) ‖ id`. Key bytes are hashed into the state root, so anything writing state directly — genesis funding, fixtures, a state-sync importer — must produce byte-identical keys or it silently forks from its peers.
+
+- `accountKey(address)` — where an account record lives. This is the one you want.
+- `stateKey(namespace, id)` — the general form, for the other `StateNamespace` entries.
+- `StateNamespace` — `account:`, `credential:`, `proposal:`, `service:`, `identity:`, `escrow:`, `validator:`. Only `account:` is read or written by the state machine today.
+
+Length-prefixing matters here even though the shipped namespaces happen not to collide: prefix-freeness and fixed-width ids are coincidences, not invariants, and a bare `namespace ‖ id` concatenation would let two different pairs land on one key. Keys within a namespace still share a prefix and sort together.
 
 ### Genesis funding
 
-There is no genesis-block concept — initial state is whatever you write to the store before the first block. Accounts live under the `'account:'` namespace:
+There is no genesis-block concept — initial state is whatever you write to the store before the first block. Accounts live under the `account:` namespace; use `accountKey` to build the key rather than concatenating the prefix by hand:
 
 ```js
-import { InMemoryStateStore, encodeAccount } from '@johnhenry/raijin-core'
+import { InMemoryStateStore, encodeAccount, accountKey } from '@johnhenry/raijin-core'
 
 const store = new InMemoryStateStore()
-const prefix = new TextEncoder().encode('account:')
 await store.put(
-  new Uint8Array([...prefix, ...alicePublicKey]),
+  accountKey(alicePublicKey),
   encodeAccount({ balance: 1_000n, nonce: 0n, reputation: 0n }),
 )
 ```

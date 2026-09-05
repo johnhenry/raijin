@@ -27,8 +27,16 @@ Think of it as the OP Stack, but for browsers.
 
 > **Provenance:** the six publishable packages above were previously
 > published unscoped (`raijin-core`, `raijin-consensus`, etc.) and now live
-> under the `@johnhenry` npm scope, restarting at `0.0.0`. See
+> under the `@johnhenry` npm scope, where they restarted at `0.0.0`. See
 > [CHANGELOG.md](CHANGELOG.md) for exact prior versions per package.
+
+> **If you are on `0.0.0`, upgrade.** `0.0.1` is the first release of these
+> packages that is safe to run: `0.0.0` and every unscoped version before it
+> finalize blocks on an unsafe quorum, collect consensus vote signatures
+> without verifying them, and derive block, state and Merkle roots from
+> encodings that two different structures can share. `0.0.1` is a hard wire-
+> format break with no compatibility mode — see [CHANGELOG.md](CHANGELOG.md)
+> and [MIGRATION.md](MIGRATION.md).
 
 ## Quick Start
 
@@ -92,12 +100,18 @@ What it provides:
 
 Why it stays unpublished: it reaches into `../../consensus/test/helpers.ts`
 for its mock network/timer (a path that only exists in this repo), and its
-multi-node tests are timing-sensitive by nature — the 11 harness tests are
+multi-node tests are timing-sensitive by nature — the 25 harness tests are
 known to be flaky under load, which is acceptable for internal scenario
-testing but not something to ship. The 123 tests across the six publishable
+testing but not something to ship. The 229 tests across the six publishable
 packages are deterministic; CI's example smoke step is also restricted to
 single-node scenarios for the same reason (see
 [examples/README.md](examples/README.md)).
+
+The harness also carries the Byzantine scenarios: an equivocating proposer
+that sends two different blocks for one sequence, and votes replayed across
+phases. Both were proven non-vacuous by injection — restoring the old
+`2f+1` quorum produces a real fork across honest replicas, and unbinding a
+vote's phase lets a block finalize on a manufactured commit quorum.
 
 ## Design Principles
 

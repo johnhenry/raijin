@@ -21,6 +21,13 @@ import { Mempool } from '@johnhenry/raijin-mempool'
 import { BlockProducer } from './block-producer.js'
 
 export interface ValidatorNodeConfig {
+  /**
+   * Chain identifier — which deployment this node belongs to. Required, with
+   * no default: it is signed into every consensus vote, and a default id is
+   * one that every deployment which never chose one would share, letting
+   * votes replay between them. See `PBFTConfig.chainId`.
+   */
+  chainId: bigint
   /** This node's identity. */
   identity: {
     publicKey: Uint8Array
@@ -58,6 +65,7 @@ export class ValidatorNode {
 
   constructor(config: ValidatorNodeConfig) {
     const {
+      chainId,
       identity,
       transport,
       timer,
@@ -90,6 +98,7 @@ export class ValidatorNode {
     // Create consensus engine
     this.#consensus = new PBFTConsensus({
       identity: identity.publicKey,
+      chainId,
       validators: this.#validatorSet,
       transport,
       timer,
@@ -200,7 +209,7 @@ export class ValidatorNode {
     this.#mempool.removeBatch(block.transactions)
 
     // Advance block producer state
-    this.#blockProducer.advance(block)
+    await this.#blockProducer.advance(block)
 
     // Notify external handlers
     for (const handler of this.#onBlockFinalizedHandlers) {

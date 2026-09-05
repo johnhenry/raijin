@@ -1,6 +1,6 @@
 {
   "name": "@johnhenry/raijin-validator",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Composition root wiring core, consensus, and mempool into a runnable validator node",
   "repository": {
     "type": "git",
@@ -29,9 +29,9 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@johnhenry/raijin-core": "^0.0.0",
-    "@johnhenry/raijin-consensus": "^0.0.0",
-    "@johnhenry/raijin-mempool": "^0.0.0"
+    "@johnhenry/raijin-core": "^0.0.1",
+    "@johnhenry/raijin-consensus": "^0.0.1",
+    "@johnhenry/raijin-mempool": "^0.0.1"
   },
   "devDependencies": {
     "typescript": "^5.7",

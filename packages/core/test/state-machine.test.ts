@@ -3,6 +3,7 @@ import {
   StateMachine,
   InMemoryStateStore,
   TransactionType,
+  accountKey,
   encodeTx,
   hash,
   type Transaction,
@@ -84,10 +85,7 @@ describe('StateMachine', () => {
       const root1 = await sm.stateRoot()
       // Fund alice directly in the store
       const { encodeAccount } = await import('../src/encoding.js')
-      const key = new TextEncoder().encode('account:')
-      const fullKey = new Uint8Array(key.length + alice.length)
-      fullKey.set(key, 0)
-      fullKey.set(alice, key.length)
+      const fullKey = accountKey(alice)
       await store.put(fullKey, encodeAccount({ balance: 100n, nonce: 0n, reputation: 0n }))
       const root2 = await sm.stateRoot()
       expect(root1).not.toEqual(root2)
@@ -98,10 +96,7 @@ describe('StateMachine', () => {
     beforeEach(async () => {
       // Fund alice with 1000
       const { encodeAccount } = await import('../src/encoding.js')
-      const key = new TextEncoder().encode('account:')
-      const fullKey = new Uint8Array(key.length + alice.length)
-      fullKey.set(key, 0)
-      fullKey.set(alice, key.length)
+      const fullKey = accountKey(alice)
       await store.put(fullKey, encodeAccount({ balance: 1000n, nonce: 0n, reputation: 0n }))
     })
 
@@ -183,10 +178,7 @@ describe('StateMachine', () => {
   describe('reputation attestation', () => {
     beforeEach(async () => {
       const { encodeAccount } = await import('../src/encoding.js')
-      const key = new TextEncoder().encode('account:')
-      const fullKey = new Uint8Array(key.length + alice.length)
-      fullKey.set(key, 0)
-      fullKey.set(alice, key.length)
+      const fullKey = accountKey(alice)
       await store.put(fullKey, encodeAccount({ balance: 100n, nonce: 0n, reputation: 10n }))
     })
 
@@ -216,10 +208,7 @@ describe('StateMachine', () => {
   describe('applyBlock', () => {
     beforeEach(async () => {
       const { encodeAccount } = await import('../src/encoding.js')
-      const key = new TextEncoder().encode('account:')
-      const fullKey = new Uint8Array(key.length + alice.length)
-      fullKey.set(key, 0)
-      fullKey.set(alice, key.length)
+      const fullKey = accountKey(alice)
       await store.put(fullKey, encodeAccount({ balance: 1000n, nonce: 0n, reputation: 5n }))
     })
 

@@ -7,6 +7,14 @@
  */
 
 import { toHex } from '@johnhenry/raijin-core'
+// NOTE: from the consensus SOURCE, not from '@johnhenry/raijin-consensus'.
+// That specifier resolves to the package's built `dist`, which is only as
+// fresh as the last build — and `ByzantinePeer` (consensus/test/helpers.ts)
+// already builds its vote payloads against the source. Two ValidatorSet
+// classes from two builds would silently disagree about `epoch()`, and a
+// disagreement about the epoch is an invalid signature, not a failing
+// assertion. One source, one epoch.
+import { ValidatorSet } from '../../consensus/src/validator-set.js'
 import {
   MockTimer,
   mockSign,
@@ -16,8 +24,17 @@ import {
 import { PartitionableNetwork } from './network/partitionable-network.js'
 import { SeededPRNG } from './network/seeded-prng.js'
 import { RaijinTestNode } from './nodes/raijin-test-node.js'
+import { ByzantineTestNode } from './nodes/byzantine-node.js'
 import { EventCollector } from './timeline/event-collector.js'
 import { ReportGenerator, type ReportEntry } from './timeline/report-generator.js'
+
+/**
+ * The chain id every node in an orchestrated cluster votes under.
+ *
+ * Matches the one `RaijinTestNode` gives its `ValidatorNode`; a Byzantine
+ * node has to name the same chain as the nodes it lies to.
+ */
+const CHAIN_ID = 1n
 
 export interface Checker {
   name: string
@@ -33,22 +50,39 @@ export interface CheckResult {
 export class TestOrchestrator {
   readonly network: PartitionableNetwork
   readonly timer: MockTimer
+  /** Honest nodes only. Checkers run over these — a liar's view of the chain
+   *  is not evidence of anything. */
   readonly nodes = new Map<string, RaijinTestNode>()
+  /** Byzantine members of the validator set. See `addByzantineNode`. */
+  readonly byzantine = new Map<string, ByzantineTestNode>()
   readonly events = new EventCollector()
 
   #validators: Uint8Array[] = []
   #nextIndex = 1
   #nodeKeys = new Map<string, Uint8Array>()
   #pendingNodes: string[] = []
+  #pendingByzantine: string[] = []
   #built = false
   #nonces = new Map<string, bigint>()  // hex(from) → next nonce
+  #seed: number | null = null
 
   constructor(opts?: { seed?: number }) {
     this.network = new PartitionableNetwork()
     this.timer = new MockTimer()
     if (opts?.seed !== undefined) {
+      this.#seed = opts.seed
       this.network.setPRNG(new SeededPRNG(opts.seed))
     }
+  }
+
+  /**
+   * The seed this cluster was built with, or null if none was given.
+   *
+   * A seeded run is only reproducible if the seed is recoverable from a
+   * failure, so tests that sweep seeds should print this one.
+   */
+  get seed(): number | null {
+    return this.#seed
   }
 
   /**
@@ -63,6 +97,28 @@ export class TestOrchestrator {
     this.#nodeKeys.set(id, key)
     this.#pendingNodes.push(id)
     this.events.record(id, 'lifecycle', 'node-registered', { index })
+  }
+
+  /**
+   * Register a validator that will LIE rather than crash.
+   *
+   * It joins the validator set exactly like an honest node — so it counts
+   * toward `n`, it takes its turn as leader, and honest peers accept its
+   * signatures — but no `ValidatorNode` is built for it. It is a transport
+   * and a key (see `ByzantineTestNode`), which is the only way to get
+   * behaviour an honest implementation would refuse to produce.
+   *
+   * Leader rotation is round-robin over registration order, so registering
+   * the liar first makes it the leader for view 0.
+   */
+  addByzantineNode(id: string): void {
+    if (this.#built) throw new Error('Cannot add nodes after startAll()')
+    const index = this.#nextIndex++
+    const key = makeTestKey(index)
+    this.#validators.push(key)
+    this.#nodeKeys.set(id, key)
+    this.#pendingByzantine.push(id)
+    this.events.record(id, 'lifecycle', 'byzantine-node-registered', { index })
   }
 
   /**
@@ -88,6 +144,24 @@ export class TestOrchestrator {
         this.events.record(id, 'lifecycle', 'node-added', {})
       }
       this.#pendingNodes = []
+
+      for (const id of this.#pendingByzantine) {
+        const key = this.#nodeKeys.get(id)!
+        const node = new ByzantineTestNode({
+          id,
+          publicKey: key,
+          chainId: CHAIN_ID,
+          // Same members, same order as every honest node's set, so the
+          // epoch inside its vote signatures matches theirs.
+          validators: new ValidatorSet([...this.#validators]),
+          transport: this.network.createTransport(key),
+          spoof: (identity) => this.network.createTransport(identity),
+        })
+        this.byzantine.set(id, node)
+        this.events.record(id, 'fault', 'byzantine-node-added', {})
+      }
+      this.#pendingByzantine = []
+
       this.#built = true
     }
 

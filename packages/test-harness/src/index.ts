@@ -9,9 +9,12 @@ export type { Checker, CheckResult } from './orchestrator.js'
 // Node
 export { RaijinTestNode } from './nodes/raijin-test-node.js'
 export type { RaijinTestNodeConfig } from './nodes/raijin-test-node.js'
+export { ByzantineTestNode } from './nodes/byzantine-node.js'
+export type { ByzantineTestNodeConfig } from './nodes/byzantine-node.js'
 
 // Network
 export { PartitionableNetwork } from './network/partitionable-network.js'
+export type { DeliveryOrder, DeliveryRecord } from './network/partitionable-network.js'
 export { SeededPRNG } from './network/seeded-prng.js'
 
 // Checkers
@@ -41,4 +44,5 @@ export {
   mockSign,
   mockVerifier,
   makeTestKey,
+  ByzantinePeer,
 } from '../../consensus/test/helpers.js'

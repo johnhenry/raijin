@@ -13,9 +13,10 @@ npm install @johnhenry/raijin-sdk
 ## Things to know first
 
 - **`Wallet` needs Web Crypto Ed25519.** Node 20+ and current browsers have it; older environments throw at `Wallet.generate()`. The repo targets Node ≥ 24.
-- **Signatures cover `encodeTx(tx)` — everything except the signature itself.** Mutate any field after `buildTx()` and verification fails (that's the point). Validators hash the same bytes for the receipt `txHash`, so `hash(encodeTx(tx))` is how you match your transaction to its receipt.
+- **Signatures cover `encodeTx(tx)` — everything except the signature itself.** Mutate any field after `buildTx()` and verification fails (that's the point).
+- **A receipt's `txHash` is `hash(encodeTxSigned(tx))`, not `hash(encodeTx(tx))`.** The canonical transaction identifier includes the signature, and it is the same value everywhere: receipt `txHash`, block `txRoot` leaves, and the mempool's dedup key. Signature *verification* still runs over the unsigned `encodeTx(tx)` bytes, because that is what was signed — the two encodings have different jobs, and only the signed one identifies a transaction. See "Correlating submissions with receipts" below.
 - **Nonce management is yours.** `buildTx()` takes an explicit `nonce`; fetch the account first (`(await client.getAccount(wallet.publicKey)).nonce`) or track it locally. A wrong nonce becomes a `revert` receipt, not an error at submit time.
-- **`chainId` defaults to `1n`** and exists to prevent cross-chain replay; the reference state machine does not yet enforce it.
+- **`chainId` is required — there is no default.** It exists to prevent cross-chain replay, and a default would hand every deployment that never chose one the same id. It is part of the signed bytes; the reference state machine does not additionally check it against a configured chain.
 
 ## Quick start
 
@@ -47,7 +48,7 @@ A complete end-to-end run — real Ed25519 verification against an in-process `V
 | Member | Purpose |
 | --- | --- |
 | `static generate(opts?): Promise<Wallet>` | New Ed25519 keypair via `crypto.subtle.generateKey`. **Non-extractable by default** — pass `{ extractable: true }` only if the key has to be exported. |
-| `static fromKey(pkcs8: Uint8Array): Promise<Wallet>` | Import a private key (PKCS8); the public key is derived from it. |
+| `static fromKey(pkcs8, opts?): Promise<Wallet>` | Import a private key (PKCS8); the public key is derived from it. **Non-extractable by default**, same as `generate()` — pass `{ extractable: true }` only if the key has to be exported again. |
 | `publicKey: Uint8Array` | 32-byte raw public key — this is your address. |
 | `sign(message): Promise<Uint8Array>` | Raw Ed25519 signature (64 bytes, deterministic). |
 | `buildTx(opts: BuildTxOptions): Promise<Transaction>` | Assembles `{ from: publicKey, to, value, nonce, data?, chainId }` and signs it. |
@@ -56,7 +57,7 @@ A complete end-to-end run — real Ed25519 verification against an in-process `V
 `BuildTxOptions`: `{ to, value, nonce, data?, chainId }` — `data` defaults to empty (which the state machine treats as a `Transfer`; set `data[0]` to a `TransactionType` byte for anything else).
 
 - **`chainId` is required.** It is the only field separating one deployment from another, so a default would give every chain that never chose one the same id, and a signed transfer on either would be a valid signed transfer on the other for any account whose key is shared between them.
-- **Private keys are non-extractable unless you ask.** In a browser that is the strongest guarantee WebCrypto offers: the key cannot leave the browser, whatever script asks for it. `exportPrivateKey()` needs `Wallet.generate({ extractable: true })`.
+- **Private keys are non-extractable unless you ask** — on `generate()` **and** on `fromKey()`. In a browser that is the strongest guarantee WebCrypto offers: the key cannot leave the browser, whatever script asks for it. `fromKey` matters most here, because it is the persistence path — where a key written to storage comes back — so it is the path most likely to be handed to code that never asked for an exportable key. `exportPrivateKey()` needs `{ extractable: true }` at whichever of the two created the wallet.
 
 ### `RaijinClient`
 
@@ -82,16 +83,16 @@ interface ClientTransport {
 }
 ```
 
-For tests and demos, back it directly with a `ValidatorNode`: `getAccount` → `node.stateMachine.getAccount`, `submitTransaction` → `node.submitTransaction` + match the receipt by `hash(encodeTx(tx))` in `onBlockFinalized`.
+For tests and demos, back it directly with a `ValidatorNode`: `getAccount` → `node.stateMachine.getAccount`, `submitTransaction` → `node.submitTransaction` + match the receipt by `hash(encodeTxSigned(tx))` in `onBlockFinalized`.
 
 ## Correlating submissions with receipts
 
-Receipts identify transactions by `txHash = hash(encodeTx(tx))` — the hash of the *unsigned* canonical encoding (the validator's mempool separately keys by the signed encoding; don't mix them up). To match your own submission inside a block-finalized callback:
+Receipts identify transactions by `txHash = hash(encodeTxSigned(tx))` — the hash of the *signed* canonical encoding. It is the same identifier the block's `txRoot` leaves and the mempool's dedup key use, so there is one transaction id, not two. (`node.submitTransaction(tx)` returns that same hash as hex.) To match your own submission inside a block-finalized callback:
 
 ```js
-import { hash, encodeTx, equal } from '@johnhenry/raijin-core'
+import { hash, encodeTxSigned, equal } from '@johnhenry/raijin-core'
 
-const want = await hash(encodeTx(tx))
+const want = await hash(encodeTxSigned(tx))
 node.onBlockFinalized((_block, receipts) => {
   const mine = receipts.find((r) => equal(r.txHash, want))
   if (mine) console.log(mine.status, mine.revertReason ?? '')

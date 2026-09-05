@@ -11,6 +11,16 @@ import { SeededPRNG } from './seeded-prng.js'
 
 type Handler = (from: Uint8Array, msg: ConsensusMessage) => Promise<void> | void
 
+/** How `PartitionableNetwork.deliver()` chooses among ready messages. */
+export type DeliveryOrder = 'fifo' | 'random'
+
+/** One delivered message, as recorded in `PartitionableNetwork.deliveryLog`. */
+export interface DeliveryRecord {
+  from: string
+  to: string
+  type: ConsensusMessage['type']
+}
+
 interface QueueItem {
   from: Uint8Array
   fromHex: string
@@ -50,10 +60,44 @@ export class PartitionableNetwork {
   #dropRates = new Map<string, number>() // "fromHex:toHex" → probability [0,1)
   #prng: SeededPRNG | null = null
   #now = 0  // logical time for delays
+  #deliveryOrder: DeliveryOrder = 'fifo'
+  #deliveryLog: DeliveryRecord[] = []
 
-  /** Set the PRNG for probabilistic message drops */
+  /** Set the PRNG for probabilistic message drops and seeded reordering. */
   setPRNG(prng: SeededPRNG): void {
     this.#prng = prng
+  }
+
+  /**
+   * How `deliver()` picks among the messages that are ready to be delivered.
+   *
+   * `'fifo'` (the default, and the only behaviour this network had) always
+   * takes the oldest deliverable message. That makes every run identical, but
+   * it also means the suite only ever exercises ONE interleaving — and a
+   * consensus protocol's interesting failures live in the interleavings. A
+   * crash test passes under FIFO and says nothing about the other orderings.
+   *
+   * `'random'` picks uniformly among the currently-deliverable messages using
+   * the seeded PRNG, so a seed names an interleaving and a failing seed
+   * reproduces exactly. It requires `setPRNG` — without one it silently stays
+   * FIFO, which would be a lie, so it throws instead.
+   */
+  setDeliveryOrder(order: DeliveryOrder): void {
+    if (order === 'random' && !this.#prng) {
+      throw new Error('setDeliveryOrder("random") requires setPRNG() first')
+    }
+    this.#deliveryOrder = order
+  }
+
+  /**
+   * Every message delivered so far, in the order it was delivered.
+   *
+   * This is what makes "the same seed reproduces the same run" a checkable
+   * claim rather than an assurance: two runs of the same scenario under the
+   * same seed must produce identical logs, and two different seeds must not.
+   */
+  get deliveryLog(): readonly DeliveryRecord[] {
+    return this.#deliveryLog
   }
 
   /** Create a transport for a peer */
@@ -106,21 +150,53 @@ export class PartitionableNetwork {
 
   /** Deliver one queued message (if any is ready) */
   async deliver(): Promise<boolean> {
-    // Find first deliverable message (not blocked, not delayed, not disconnected)
+    // Collect what could be delivered right now (not blocked, not still
+    // delayed, recipient not disconnected). Under 'fifo' that is just the
+    // oldest such message. Under 'random' it is the oldest message *per
+    // link*, and the PRNG picks among those.
+    //
+    // Per-link order is preserved on purpose. Every transport raijin is meant
+    // to run on — an ordered WebRTC DataChannel, a WebSocket — delivers one
+    // peer's messages to one peer in the order they were sent; what a real
+    // network reorders is messages travelling on DIFFERENT links. Shuffling
+    // within a link would model a transport nobody deploys, and it would
+    // reorder a sender's own PRE-PREPARE behind its own PREPARE, which no
+    // sender can do.
+    const ready: number[] = []
+    const seenLinks = new Set<string>()
     for (let i = 0; i < this.#queue.length; i++) {
       const item = this.#queue[i]
       if (item.deliverAfter > this.#now) continue
       if (this.#blocked.has(`${item.fromHex}:${item.to}`)) continue
       if (this.#disconnected.has(item.to)) continue
-
-      this.#queue.splice(i, 1)
-      const handler = this.#peers.get(item.to)
-      if (handler) {
-        await handler(item.from, item.msg)
+      if (this.#deliveryOrder === 'fifo') {
+        ready.push(i)
+        break
       }
-      return true
+      const link = `${item.fromHex}:${item.to}`
+      if (seenLinks.has(link)) continue // keep this link's own order
+      seenLinks.add(link)
+      ready.push(i)
     }
-    return false
+    if (ready.length === 0) return false
+
+    const chosen =
+      this.#deliveryOrder === 'random' && this.#prng
+        ? ready[this.#prng.nextInt(ready.length)]
+        : ready[0]
+
+    const [item] = this.#queue.splice(chosen, 1)
+    this.#deliveryLog.push({
+      from: item.fromHex,
+      to: item.to,
+      type: item.msg.type,
+    })
+
+    const handler = this.#peers.get(item.to)
+    if (handler) {
+      await handler(item.from, item.msg)
+    }
+    return true
   }
 
   /** Deliver all ready messages */
