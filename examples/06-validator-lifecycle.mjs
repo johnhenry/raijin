@@ -10,6 +10,7 @@
  */
 import assert from 'node:assert/strict'
 import {
+  accountKey,
   InMemoryStateStore,
   TransactionType,
   encodeAccount,
@@ -22,9 +23,8 @@ const bob = new Uint8Array(32).fill(2)
 
 // Fund alice at genesis
 const store = new InMemoryStateStore()
-const prefix = new TextEncoder().encode('account:')
 await store.put(
-  new Uint8Array([...prefix, ...alice]),
+  accountKey(alice),
   encodeAccount({ balance: 10_000n, nonce: 0n, reputation: 0n }),
 )
 

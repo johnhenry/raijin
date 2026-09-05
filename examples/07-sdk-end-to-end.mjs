@@ -10,6 +10,7 @@
  */
 import assert from 'node:assert/strict'
 import {
+  accountKey,
   InMemoryStateStore,
   encodeAccount,
   encodeTxSigned,
@@ -41,9 +42,8 @@ const merchant = new Uint8Array(32).fill(9)
 
 // ── One in-process validator node ─────────────────────────────────────
 const store = new InMemoryStateStore()
-const prefix = new TextEncoder().encode('account:')
 await store.put(
-  new Uint8Array([...prefix, ...userWallet.publicKey]),
+  accountKey(userWallet.publicKey),
   encodeAccount({ balance: 1_000n, nonce: 0n, reputation: 0n }),
 )
 

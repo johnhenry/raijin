@@ -14,13 +14,28 @@ import type {
 } from './types.js'
 import { TransactionType } from './types.js'
 import { hash, merkleRoot } from './hash.js'
-import { encodeTx, encodeTxSigned, encodeAccount, decodeAccount } from './encoding.js'
+import {
+  encodeTx,
+  encodeTxSigned,
+  encodeAccount,
+  decodeAccount,
+  encodeBytes,
+  Domain,
+} from './encoding.js'
 
 const EMPTY_ACCOUNT: Account = { balance: 0n, nonce: 0n, reputation: 0n }
 const encoder = new TextEncoder()
 
-/** Namespace prefixes for state keys. */
-const NS = {
+/**
+ * Namespace prefixes for state keys.
+ *
+ * Exported because a state key's bytes are consensus-critical: every key is
+ * hashed into the state root, so anything that writes state directly — genesis
+ * funding, a test fixture, a state-sync importer — must produce byte-identical
+ * keys or the node silently forks from its peers at the first root comparison.
+ * Build keys with `accountKey`/`stateKey`, never by concatenating by hand.
+ */
+export const StateNamespace = {
   account: encoder.encode('account:'),
   credential: encoder.encode('credential:'),
   proposal: encoder.encode('proposal:'),
@@ -30,12 +45,44 @@ const NS = {
   validator: encoder.encode('validator:'),
 } as const
 
-/** Build a namespaced state key. */
-function stateKey(namespace: Uint8Array, id: Uint8Array): Uint8Array {
-  const key = new Uint8Array(namespace.length + id.length)
-  key.set(namespace, 0)
-  key.set(id, namespace.length)
+/**
+ * Build a namespaced state key: `0x07 ‖ len(namespace) ‖ namespace ‖ len(id) ‖ id`.
+ *
+ * This used to be the bare concatenation `namespace ‖ id`, which was
+ * unambiguous only by coincidence. Two coincidences, in fact, and neither is
+ * enforced anywhere: that the namespaces defined above happen to be
+ * prefix-free (they differ in their first byte — a, c, p, s, i, e, v), and
+ * that every id in use happens to be a fixed-width 32-byte public key.
+ * Neither the `Uint8Array` type nor any runtime check holds either property.
+ * Add a namespace whose name extends another's, or a variable-length id, and
+ * `ns₁ ‖ id₁` can equal `ns₂ ‖ id₂` for different pairs — two different pieces
+ * of state at one key, and a state root that no longer says which one it
+ * committed to.
+ *
+ * Length-prefixing removes the coincidence: each field is self-delimiting, so
+ * distinct `(namespace, id)` pairs always produce distinct keys. The domain
+ * tag keeps a state key from colliding with any other encoded structure. Keys
+ * within one namespace still share a common prefix and so still sort and scan
+ * together, because a namespace's own length is fixed.
+ */
+export function stateKey(namespace: Uint8Array, id: Uint8Array): Uint8Array {
+  const ns = encodeBytes(namespace)
+  const body = encodeBytes(id)
+  const key = new Uint8Array(1 + ns.length + body.length)
+  key[0] = Domain.StateKey
+  key.set(ns, 1)
+  key.set(body, 1 + ns.length)
   return key
+}
+
+/**
+ * The state key an account record lives under.
+ *
+ * This is the key genesis funding must write to — see the "Genesis funding"
+ * section of the package README.
+ */
+export function accountKey(address: Uint8Array): Uint8Array {
+  return stateKey(StateNamespace.account, address)
 }
 
 /**
@@ -53,7 +100,7 @@ export class StateMachine {
 
   /** Get an account from state, returning a zero account if not found. */
   async getAccount(address: Uint8Array): Promise<Account> {
-    const key = stateKey(NS.account, address)
+    const key = accountKey(address)
     const data = await this.#store.get(key)
     if (!data) return { ...EMPTY_ACCOUNT }
     return decodeAccount(data)
@@ -61,7 +108,7 @@ export class StateMachine {
 
   /** Write an account to state. */
   async #putAccount(address: Uint8Array, account: Account): Promise<void> {
-    const key = stateKey(NS.account, address)
+    const key = accountKey(address)
     await this.#store.put(key, encodeAccount(account))
   }
 

@@ -5,6 +5,7 @@
 import {
   InMemoryStateStore,
   TransactionType,
+  accountKey,
   encodeAccount,
   encodeTx,
   toHex,
@@ -16,7 +17,6 @@ import type { ConsensusTimer, NetworkTransport } from '@johnhenry/raijin-consens
 import { ValidatorNode } from '@johnhenry/raijin-validator'
 import { mockSign } from '../../../consensus/test/helpers.js'
 
-const encoder = new TextEncoder()
 
 export interface RaijinTestNodeConfig {
   /** Unique string ID for this node (for orchestrator bookkeeping). */
@@ -111,11 +111,7 @@ export class RaijinTestNode {
   async fund(account: Uint8Array, amount: bigint): Promise<void> {
     // Read existing account to preserve nonce/reputation, then add to balance
     const existing = await this.node.stateMachine.getAccount(account)
-    const prefix = encoder.encode('account:')
-    const key = new Uint8Array(prefix.length + account.length)
-    key.set(prefix, 0)
-    key.set(account, prefix.length)
-    await this.store.put(key, encodeAccount({
+    await this.store.put(accountKey(account), encodeAccount({
       balance: existing.balance + amount,
       nonce: existing.nonce,
       reputation: existing.reputation,

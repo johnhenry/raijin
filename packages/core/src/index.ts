@@ -23,6 +23,10 @@ export { TransactionType } from './types.js'
 // State machine
 export { StateMachine } from './state-machine.js'
 
+// State keys — the canonical layout for anything writing state directly
+// (genesis funding, fixtures, state sync). See `stateKey`'s docs.
+export { StateNamespace, stateKey, accountKey } from './state-machine.js'
+
 // State store
 export { InMemoryStateStore } from './state.js'
 

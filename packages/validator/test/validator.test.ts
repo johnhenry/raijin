@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import {
   InMemoryStateStore,
   TransactionType,
+  accountKey,
   encodeAccount,
   type Transaction,
   type SignatureVerifier,
@@ -177,11 +178,7 @@ describe('ValidatorNode', () => {
     })
 
     // Fund alice
-    const key = new TextEncoder().encode('account:')
-    const fullKey = new Uint8Array(key.length + alice.length)
-    fullKey.set(key, 0)
-    fullKey.set(alice, key.length)
-    await store.put(fullKey, encodeAccount({ balance: 10000n, nonce: 0n, reputation: 0n }))
+    await store.put(accountKey(alice), encodeAccount({ balance: 10000n, nonce: 0n, reputation: 0n }))
   })
 
   it('starts and stops cleanly', () => {

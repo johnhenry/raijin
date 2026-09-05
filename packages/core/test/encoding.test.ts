@@ -10,6 +10,9 @@ import {
   encodeTxSigned,
   encodeReceipt,
   encodeStateEntry,
+  stateKey,
+  accountKey,
+  StateNamespace,
   encodeBlockHeader,
   toHex,
   Domain,
@@ -194,5 +197,31 @@ describe('canonical encoding — injectivity', () => {
   it('tags each structure with a distinct domain byte', () => {
     const tags = Object.values(Domain)
     expect(new Set(tags).size).toBe(tags.length)
+  })
+
+  it('gives two state keys that split the same bytes differently different keys', () => {
+    // The bare `namespace ‖ id` concatenation this replaced was unambiguous
+    // only because the shipped namespaces happen to be prefix-free and every
+    // id happens to be 32 bytes. Neither is enforced, so the encoding must
+    // not depend on either.
+    const a = stateKey(new Uint8Array([0x61, 0x62]), new Uint8Array([0x63]))
+    const b = stateKey(new Uint8Array([0x61]), new Uint8Array([0x62, 0x63]))
+    expect(toHex(a)).not.toBe(toHex(b))
+  })
+
+  it('keeps keys in one namespace under a common, sortable prefix', () => {
+    // Length-prefixing must not scatter a namespace: a namespace's own length
+    // is fixed, so every key in it still shares a prefix and sorts together.
+    const one = toHex(accountKey(new Uint8Array(32).fill(1)))
+    const two = toHex(accountKey(new Uint8Array(32).fill(2)))
+    const other = toHex(stateKey(StateNamespace.validator, new Uint8Array(32).fill(1)))
+    const shared = toHex(stateKey(StateNamespace.account, new Uint8Array(0))).slice(0, 20)
+    expect(one.startsWith(shared)).toBe(true)
+    expect(two.startsWith(shared)).toBe(true)
+    expect(other.startsWith(shared)).toBe(false)
+  })
+
+  it('domain-tags a state key so it cannot be read as another structure', () => {
+    expect(accountKey(new Uint8Array(32))[0]).toBe(Domain.StateKey)
   })
 })

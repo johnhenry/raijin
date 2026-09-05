@@ -43,6 +43,7 @@ export const Domain = {
   Receipt: 0x04,
   BlockHeader: 0x05,
   StateEntry: 0x06,
+  StateKey: 0x07,
 } as const
 
 export type DomainTag = (typeof Domain)[keyof typeof Domain]

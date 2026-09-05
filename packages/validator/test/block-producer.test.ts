@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import {
   InMemoryStateStore,
   TransactionType,
+  accountKey,
   encodeAccount,
   encodeTxSigned,
   blockHash,
@@ -82,11 +83,7 @@ const alice = makeKey(1)
 const bob = makeKey(2)
 
 async function fundAccount(store: InMemoryStateStore, address: Uint8Array, balance: bigint): Promise<void> {
-  const prefix = new TextEncoder().encode('account:')
-  const key = new Uint8Array(prefix.length + address.length)
-  key.set(prefix, 0)
-  key.set(address, prefix.length)
-  await store.put(key, encodeAccount({ balance, nonce: 0n, reputation: 0n }))
+  await store.put(accountKey(address), encodeAccount({ balance, nonce: 0n, reputation: 0n }))
 }
 
 describe('BlockProducer / ValidatorNode — receipt & chain-linkage integrity', () => {

@@ -10,6 +10,7 @@
  */
 import assert from 'node:assert/strict'
 import {
+  accountKey,
   StateMachine,
   InMemoryStateStore,
   TransactionType,
@@ -28,10 +29,9 @@ const alice = new Uint8Array(32).fill(1)
 const bob = new Uint8Array(32).fill(2)
 
 // Fund alice directly in the store (genesis-style). Account state lives
-// under the 'account:' namespace prefix.
-const prefix = new TextEncoder().encode('account:')
-const aliceKey = new Uint8Array([...prefix, ...alice])
-await store.put(aliceKey, encodeAccount({ balance: 1000n, nonce: 0n, reputation: 0n }))
+// under the 'account:' namespace; `accountKey` builds the canonical key
+// bytes, which are hashed into the state root — don't hand-roll them.
+await store.put(accountKey(alice), encodeAccount({ balance: 1000n, nonce: 0n, reputation: 0n }))
 
 function transfer(from, to, value, nonce) {
   return {
