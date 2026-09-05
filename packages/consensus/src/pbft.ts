@@ -13,7 +13,7 @@
  */
 
 import type { Block, StateMachine, TransactionReceipt, SignatureVerifier } from '@johnhenry/raijin-core'
-import { hash, merkleRoot, encodeReceipt, equal, toHex } from '@johnhenry/raijin-core'
+import { hash, merkleRoot, encodeReceipt, encodeBlockHeader, equal, toHex } from '@johnhenry/raijin-core'
 import { ValidatorSet } from './validator-set.js'
 import { voteDigest, NO_BLOCK_DIGEST, type VotePhase } from './vote.js'
 import type {
@@ -420,8 +420,10 @@ export class PBFTConsensus {
     // executed the block, fill in the real values. This doesn't change the
     // already-agreed digest (nothing re-verifies it after this point); it
     // only affects the finalized block object used for chain linkage
-    // (BlockProducer#advance reads `header.stateRoot` as the next block's
-    // parentHash) and for fork/convergence detection in the test harness.
+    // (BlockProducer#advance hashes this completed header with `blockHash`
+    // to get the next block's parentHash, so the link covers the executed
+    // result as well as the proposal) and for fork/convergence detection in
+    // the test harness.
     this.#pendingBlock.header.stateRoot = await this.#stateMachine.stateRoot()
     this.#pendingBlock.header.receiptRoot = await this.#computeReceiptRoot(receipts)
 
@@ -528,34 +530,11 @@ export class PBFTConsensus {
 
   // ── Helpers ─────────────────────────────────────────────────────────
 
+  /** Header bytes the consensus digest is taken over. Shared with
+   *  `blockHash`, so the bytes nodes agree on and the bytes that link a block
+   *  to its child are the same bytes. */
   #serializeBlockHeader(block: Block): Uint8Array {
-    // Deterministic serialization of block header fields
-    const parts: Uint8Array[] = [
-      this.#bigintToBytes(block.header.number),
-      block.header.parentHash,
-      block.header.stateRoot,
-      block.header.txRoot,
-      block.header.receiptRoot,
-      this.#bigintToBytes(BigInt(block.header.timestamp)),
-      block.header.proposer,
-    ]
-    const totalLen = parts.reduce((sum, p) => sum + p.length, 0)
-    const result = new Uint8Array(totalLen)
-    let pos = 0
-    for (const part of parts) {
-      result.set(part, pos)
-      pos += part.length
-    }
-    return result
-  }
-
-  #bigintToBytes(value: bigint): Uint8Array {
-    const hex = value.toString(16).padStart(16, '0')
-    const bytes = new Uint8Array(8)
-    for (let i = 0; i < 8; i++) {
-      bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
-    }
-    return bytes
+    return encodeBlockHeader(block.header)
   }
 
   /** Sign one vote over its domain-separated payload (see `voteDigest`). */

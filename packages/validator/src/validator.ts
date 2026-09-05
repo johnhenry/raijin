@@ -200,7 +200,7 @@ export class ValidatorNode {
     this.#mempool.removeBatch(block.transactions)
 
     // Advance block producer state
-    this.#blockProducer.advance(block)
+    await this.#blockProducer.advance(block)
 
     // Notify external handlers
     for (const handler of this.#onBlockFinalizedHandlers) {

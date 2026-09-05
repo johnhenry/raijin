@@ -40,6 +40,8 @@ export {
   encodeAccount,
   decodeAccount,
   encodeReceipt,
+  encodeBlockHeader,
+  blockHash,
 } from './encoding.js'
 
 // Cryptography

@@ -5,6 +5,7 @@
  */
 
 import type { Transaction, Block, BlockHeader, Account, TransactionReceipt } from './types.js'
+import { hash } from './hash.js'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -136,4 +137,55 @@ export function encodeReceipt(receipt: TransactionReceipt): Uint8Array {
     pos += part.length
   }
   return result
+}
+
+// ── Block header encoding ─────────────────────────────────────────────
+
+/** Big-endian 8-byte encoding of a bigint, for fixed-width header fields. */
+function u64(value: bigint): Uint8Array {
+  const hex = value.toString(16).padStart(16, '0')
+  const bytes = new Uint8Array(8)
+  for (let i = 0; i < 8; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  }
+  return bytes
+}
+
+/**
+ * Deterministic bytes for a block header.
+ *
+ * One definition, used both for the consensus digest and for the block hash
+ * that links a block to its child -- if those two ever disagree, nodes are
+ * agreeing on one thing and chaining another.
+ */
+export function encodeBlockHeader(header: BlockHeader): Uint8Array {
+  const parts: Uint8Array[] = [
+    u64(header.number),
+    header.parentHash,
+    header.stateRoot,
+    header.txRoot,
+    header.receiptRoot,
+    u64(BigInt(header.timestamp)),
+    header.proposer,
+  ]
+  const totalLen = parts.reduce((sum, p) => sum + p.length, 0)
+  const result = new Uint8Array(totalLen)
+  let pos = 0
+  for (const part of parts) {
+    result.set(part, pos)
+    pos += part.length
+  }
+  return result
+}
+
+/**
+ * The canonical hash of a block: SHA-256 over its encoded header.
+ *
+ * This is what a child block's `parentHash` must be. It commits to the
+ * transactions (via `txRoot`), the execution result (`stateRoot`,
+ * `receiptRoot`), the proposer and the timestamp, so "same height, different
+ * history" is detectable from the headers alone.
+ */
+export async function blockHash(block: Block): Promise<Uint8Array> {
+  return hash(encodeBlockHeader(block.header))
 }

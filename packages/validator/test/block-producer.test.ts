@@ -4,6 +4,7 @@ import {
   TransactionType,
   encodeAccount,
   encodeTxSigned,
+  blockHash,
   hash,
   merkleRoot,
   equal,
@@ -138,15 +139,44 @@ describe('BlockProducer / ValidatorNode — receipt & chain-linkage integrity', 
     expect(equal(recomputedTxRoot, block.header.txRoot)).toBe(true)
   })
 
-  it('chains parentHash to the previous block real (non-zero) stateRoot', async () => {
+  it("chains parentHash to the parent's canonical block hash, not to its stateRoot", async () => {
     const tx1 = makeTransfer(alice, bob, 100n, 0n)
     const { block: block1 } = await produceAndFinalize(tx1)
 
+    // The parent must have been executed before it can be hashed: a header
+    // still carrying zero placeholders would link the chain to nothing.
     expect(block1.header.stateRoot).not.toEqual(new Uint8Array(32))
+    expect(block1.header.receiptRoot).not.toEqual(new Uint8Array(32))
 
     const tx2 = makeTransfer(alice, bob, 50n, 1n)
     const { block: block2 } = await produceAndFinalize(tx2)
 
-    expect(equal(block2.header.parentHash, block1.header.stateRoot)).toBe(true)
+    // What this pins: the link between two blocks is a commitment to the
+    // parent's whole header — number, parentHash, stateRoot, txRoot,
+    // receiptRoot, timestamp and proposer — so a child names exactly one
+    // possible parent.
+    expect(equal(block2.header.parentHash, await blockHash(block1))).toBe(true)
+
+    // And what it pins against: parentHash used to be the parent's *state
+    // root*, which commits to the resulting account state and to nothing
+    // else. Two different blocks that leave the same post-state (any two
+    // whose transactions all revert, say) were indistinguishable as parents.
+    expect(equal(block2.header.parentHash, block1.header.stateRoot)).toBe(false)
+  })
+
+  it('gives two blocks with an identical post-state distinct block hashes', async () => {
+    // The concrete failure the stateRoot link could not see. These two
+    // headers agree on everything the old link covered (stateRoot) and
+    // differ in the transactions they contain (txRoot), which is exactly the
+    // pair a parent pointer has to tell apart.
+    const { block } = await produceAndFinalize(makeTransfer(alice, bob, 100n, 0n))
+
+    const sameState: Block = {
+      ...block,
+      header: { ...block.header, txRoot: new Uint8Array(32).fill(9) },
+    }
+
+    expect(equal(sameState.header.stateRoot, block.header.stateRoot)).toBe(true)
+    expect(equal(await blockHash(sameState), await blockHash(block))).toBe(false)
   })
 })
