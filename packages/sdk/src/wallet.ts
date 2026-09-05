@@ -39,6 +39,25 @@ export interface GenerateOptions {
   extractable?: boolean
 }
 
+export interface ImportOptions {
+  /**
+   * Whether the imported private key can be exported again with
+   * `exportPrivateKey()`. Default: `false`, the same default `generate()`
+   * uses.
+   *
+   * `fromKey` is the *persistence* path — it is where a key that was written
+   * to storage comes back — so it is the path most likely to be handed to
+   * code that never asked for an exportable key. Importing extractable by
+   * default meant every restored wallet could be re-exported by anything
+   * running in the origin, which quietly undid the non-extractable default on
+   * `generate()` for exactly the keys that live longest.
+   *
+   * Pass `{ extractable: true }` only where the call site genuinely needs to
+   * hand the key back out again (re-encrypting a backup, migrating a store).
+   */
+  extractable?: boolean
+}
+
 export class Wallet implements TransactionSigner {
   #privateKey: CryptoKey
   #publicKeyBytes: Uint8Array
@@ -67,9 +86,26 @@ export class Wallet implements TransactionSigner {
     return new Wallet(privateKey, publicKeyBytes)
   }
 
-  /** Import an existing Ed25519 private key (PKCS8 format). */
-  static async fromKey(pkcs8: Uint8Array): Promise<Wallet> {
-    const privateKey = await globalThis.crypto.subtle.importKey(
+  /**
+   * Import an existing Ed25519 private key (PKCS8 format). The imported key
+   * is **non-extractable** unless `{ extractable: true }` is passed — see
+   * `ImportOptions`.
+   */
+  static async fromKey(pkcs8: Uint8Array, opts: ImportOptions = {}): Promise<Wallet> {
+    const extractable = opts.extractable ?? false
+
+    // WebCrypto will only give up the public half of an Ed25519 private key
+    // through a JWK export, and a non-extractable key refuses to export at
+    // all — so the public key has to be derived from an extractable import
+    // whatever the caller asked for.
+    //
+    // Derive it from a throwaway, then import the *signing* key separately
+    // with the requested extractability. The throwaway never leaves this
+    // function and never reaches the returned Wallet, and it discloses
+    // nothing the caller does not already have: they handed us the PKCS8
+    // bytes. What it buys is that the long-lived key the Wallet holds — the
+    // one other code can reach — carries the caller's choice, not `true`.
+    const derivable = await globalThis.crypto.subtle.importKey(
       'pkcs8',
       // Pass the view, not `.buffer` — a Uint8Array that is a window into a
       // larger ArrayBuffer would otherwise import the whole buffer.
@@ -79,11 +115,24 @@ export class Wallet implements TransactionSigner {
       ['sign'],
     )
 
-    // Derive public key: export as JWK, import as public key, export raw
-    const jwk = await globalThis.crypto.subtle.exportKey('jwk', privateKey)
-    // Ed25519 JWK has 'x' as the public key component
-    const publicKeyB64 = jwk.x!
+    // Derive public key: export as JWK; Ed25519 JWK carries the public key
+    // component in 'x'.
+    const jwk = await globalThis.crypto.subtle.exportKey('jwk', derivable)
+    const publicKeyB64 = jwk.x
+    if (typeof publicKeyB64 !== 'string') {
+      throw new Error('Wallet.fromKey: imported key has no public key component (jwk.x)')
+    }
     const publicKeyBytes = base64urlDecode(publicKeyB64)
+
+    const privateKey = extractable
+      ? derivable
+      : await globalThis.crypto.subtle.importKey(
+          'pkcs8',
+          pkcs8 as BufferSource,
+          'Ed25519',
+          false,
+          ['sign'],
+        )
 
     return new Wallet(privateKey, publicKeyBytes)
   }
@@ -140,7 +189,8 @@ export class Wallet implements TransactionSigner {
     if (!this.#privateKey.extractable) {
       throw new Error(
         'Wallet.exportPrivateKey: this key is non-extractable. ' +
-        'Pass Wallet.generate({ extractable: true }) if the key has to leave the process.',
+        'Pass { extractable: true } to Wallet.generate() or Wallet.fromKey() ' +
+        'if the key has to leave the process.',
       )
     }
     const pkcs8 = await globalThis.crypto.subtle.exportKey('pkcs8', this.#privateKey)

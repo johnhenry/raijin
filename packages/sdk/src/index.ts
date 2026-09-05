@@ -8,4 +8,4 @@ export { RaijinClient } from './client.js'
 export type { ClientTransport } from './client.js'
 
 export { Wallet } from './wallet.js'
-export type { BuildTxOptions } from './wallet.js'
+export type { BuildTxOptions, GenerateOptions, ImportOptions } from './wallet.js'
