@@ -29,7 +29,8 @@ differ regardless.
 
 | Format | Before | After | Consequence |
 | --- | --- | --- | --- |
-| PBFT vote signatures (`voteDigest`) | signature over the bare block digest | `H(phase tag ‖ 0x00 ‖ chainId ‖ epoch ‖ view ‖ sequence ‖ digest)`, tags bumped `v1` → `v2`, integers LEB128, `epoch`/`digest` length-prefixed | every PREPARE/COMMIT/VIEW-CHANGE/PRE-PREPARE signature changes; old signatures verify nowhere. A vote is now scoped to one chain and one validator set as well as one phase and round |
+| PBFT vote signatures (`voteDigest`) | signature over the bare block digest | `H(phase tag ‖ 0x00 ‖ chainId ‖ epoch ‖ view ‖ sequence ‖ digest)`, tags bumped `v1` → `v2`, integers LEB128, `epoch`/`digest` length-prefixed | every PREPARE/COMMIT/VIEW-CHANGE signature changes and old signatures verify nowhere. PRE-PREPARE is a separate case — it carried no signature at all before, see the row below. A vote is now scoped to one chain and one validator set as well as one phase and round |
+| PRE-PREPARE message shape (`PrePrepareMessage`) | `{ type, view, sequence, block, digest }` — **no `from`, no `signature`** | the same plus required `from` and `signature`, signed over `voteDigest({ phase: 'pre-prepare', … })` | a proposal from an older node has no signature field and is rejected; a proposal from a newer node carries two fields an older node ignores, so it accepts an unauthenticated proposal. **If your transport serialises these structs by hand, it must carry the two new fields** — a JSON transport that silently drops them produces a chain that never finalises and reports no error |
 | DA compressed frame (`@johnhenry/raijin-da` `encode`/`decode`) | `"RJC" ‖ deflate(data)` | `"RJC" ‖ LEB128(decompressed length) ‖ deflate(data)` | a compressed blob written by an earlier build has no length header and is rejected; `decode()` refuses anything over `maxDecompressedSize` (16 MiB by default) |
 | `merkleRoot` | plain pairwise hashing, last leaf duplicated on odd levels, single leaf returned unhashed | `0x00` leaf / `0x01` node domain tags, odd level promotes, empty list is `H(0x00)` | every `txRoot` and `receiptRoot` changes |
 | Block header encoding (`encodeBlockHeader`, new export) | ad-hoc concatenation inside PBFT | domain tag `0x05`, length-prefixed roots and proposer, range-checked `u64` fields | the consensus digest changes; the header layout now has exactly one definition, shared by PBFT and `blockHash` |
@@ -87,8 +88,10 @@ differ regardless.
 These landed before the encoding work and are also new to anyone on 0.0.0.
 
 - **`PBFTConfig.verify` is required** — a `SignatureVerifier` used to check
-  every PRE-PREPARE, PREPARE, COMMIT and VIEW-CHANGE. There was previously no
-  such field, because votes were never verified. `ValidatorNode` supplies it
+  every PREPARE, COMMIT and VIEW-CHANGE. There was previously no such field,
+  because votes were never verified. (PRE-PREPARE could not be checked by that
+  earlier pass: the message carried no signature to check until 0.0.1 added
+  one — see the format table above.) `ValidatorNode` supplies it
   from `identity.verify`, which means that one verifier now authenticates
   consensus votes as well as transactions: a stub that returns `true`
   unconditionally is no longer merely permissive about transactions, it

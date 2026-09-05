@@ -77,7 +77,7 @@ Config: `proposer` (pubkey), `consensus`, `mempool`, optional `maxTxPerBlock` (d
 
 ## Running more than one node
 
-Everything above scales to a real mesh, but three things change:
+Everything above scales to a real mesh, but four things change:
 
 1. **The transport becomes real.** Every node's `transport.broadcast`/`send` must reach every other validator, and `onMessage` reports the sender's public key as `from`. Consensus no longer *trusts* that value — every vote's signature is verified against it, so a transport that lies about `from` produces messages that fail verification and are dropped. What the transport still owes you is delivery: nothing here retries or reorders, so a lossy transport costs liveness, not safety. If your wire format is JSON, consensus messages carry `bigint`s and `Uint8Array`s; you need a replacer/reviver pair (`packages/consensus/test/helpers.ts` has a working one).
 2. **`validators` must be byte-identical on every node** — same keys, same order. Leader election is positional (`view % n`), so a different ordering means nodes disagree about who may propose and nothing ever finalizes, with no error to tell you why.

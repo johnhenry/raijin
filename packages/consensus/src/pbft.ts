@@ -5,7 +5,7 @@
  * 1. Leader proposes a block (PRE-PREPARE)
  * 2. Validators acknowledge (PREPARE)
  * 3. Validators commit (COMMIT)
- * 4. Block is finalized when 2f+1 commits are collected
+ * 4. Block is finalized when a quorum of `n - f` commits is collected
  *
  * View changes handle leader failure: if the leader doesn't propose
  * within the timeout, validators request a view change to rotate
@@ -269,7 +269,7 @@ export class PBFTConsensus {
     if (!(await this.#verifyVote('pre-prepare', msg.view, msg.sequence, digest, msg.signature, from))) return
 
     // Partial view-change safety mitigation: if this sequence was already
-    // validly prepared (2f+1 PREPARE votes) at some prior view, refuse to
+    // validly prepared (a quorum of PREPARE votes) at some prior view, refuse to
     // accept a *different* block for the same sequence. We can't yet
     // automatically carry the old block forward, but we must not let a new
     // leader silently override an already-prepared one. See #doViewChange.
@@ -345,7 +345,7 @@ export class PBFTConsensus {
    * VIEW-CHANGE messages is observed — see #handleViewChange), but the
    * message type is part of the wire protocol and a malicious or buggy peer
    * could send one unsolicited. We must not act on it unless it's actually
-   * backed by a real quorum (2f+1) of validly-signed, distinct-sender
+   * backed by a real quorum (`n - f`) of validly-signed, distinct-sender
    * VIEW-CHANGE messages agreeing on the claimed view — otherwise a single
    * validator could force every other node to jump views at will.
    */

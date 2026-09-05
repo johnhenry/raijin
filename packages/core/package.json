@@ -1,6 +1,6 @@
 {
   "name": "@johnhenry/raijin-core",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "State machine, blocks, and transactions for the Raijin mesh rollup",
   "repository": {
     "type": "git",
