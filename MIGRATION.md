@@ -23,7 +23,8 @@ them would differ regardless.
 
 | Format | Before | After | Consequence |
 | --- | --- | --- | --- |
-| PBFT vote signatures (`voteDigest`) | signature over the bare block digest | `H(phase tag ‖ 0x00 ‖ view ‖ sequence ‖ digest)` | every PREPARE/COMMIT/VIEW-CHANGE/PRE-PREPARE signature changes; old signatures verify nowhere |
+| PBFT vote signatures (`voteDigest`) | signature over the bare block digest | `H(phase tag ‖ 0x00 ‖ chainId ‖ epoch ‖ view ‖ sequence ‖ digest)`, tags bumped `v1` → `v2`, integers LEB128, `epoch`/`digest` length-prefixed | every PREPARE/COMMIT/VIEW-CHANGE/PRE-PREPARE signature changes; old signatures verify nowhere. A vote is now scoped to one chain and one validator set as well as one phase and round |
+| DA compressed frame (`@johnhenry/raijin-da` `encode`/`decode`) | `"RJC" ‖ deflate(data)` | `"RJC" ‖ LEB128(decompressed length) ‖ deflate(data)` | a compressed blob written by an earlier build has no length header and is rejected; `decode()` refuses anything over `maxDecompressedSize` (16 MiB by default) |
 | `merkleRoot` | plain pairwise hashing, last leaf duplicated on odd levels, single leaf returned unhashed | `0x00` leaf / `0x01` node domain tags, odd level promotes, empty list is `H(0x00)` | every `txRoot` and `receiptRoot` changes |
 | Block header encoding (`encodeBlockHeader`, new export) | ad-hoc concatenation inside PBFT | domain tag `0x05`, length-prefixed roots and proposer, range-checked `u64` fields | the consensus digest changes; the header layout now has exactly one definition, shared by PBFT and `blockHash` |
 | `parentHash` semantics | the parent's **state root** | the parent's **block hash** — `blockHash(parent)` = `H(encodeBlockHeader(parent.header))` (new export) | chain linkage now commits to the parent's transactions, proposer, timestamp and roots, not only to its post-state |
@@ -35,13 +36,35 @@ them would differ regardless.
 
 ### Also breaking, though not a byte format
 
+- **`voteDigest()` takes one object, not five positional arguments.**
+  `voteDigest(phase, view, sequence, digest)` becomes
+  `voteDigest({ phase, chainId, epoch, view, sequence, digest })`. Four of the
+  six fields are bigints or byte strings of the same shape, so a positional
+  call with two more of them was a transposition waiting to happen — and a
+  transposed pair signs a valid-looking signature over the wrong scope.
+- **`PBFTConfig.chainId` and `ValidatorNodeConfig.chainId` are required**, with
+  no default, for the reason `chainId` is required on a transaction: a default
+  is an id shared by every deployment that never chose one. `PBFTConsensus`
+  throws `TypeError` if it is missing.
+- **`ValidatorSet` gained `epoch()`**, an async digest of the exact membership
+  and order. It is the epoch every vote is signed against; a `ValidatorSet`
+  replacement or wrapper must provide it.
 - `BlockProducer#advance(block)` returns `Promise<void>` rather than `void` —
   it hashes the parent header. Callers must `await` it.
-- `Wallet` keys are non-extractable by default, and `chainId` is required
-  when building a transaction rather than defaulting. (`chainId` was already
-  part of `encodeTx`'s bytes; what changed is that the SDK no longer picks
-  one for you.)
+- `Wallet` keys are non-extractable by default — `Wallet.generate()` **and
+  now `Wallet.fromKey()`**, which hardcoded `extractable: true` and is the
+  path a persisted key comes back through. Pass `{ extractable: true }` at the
+  call site if the key genuinely has to be exported again.
+- `chainId` is required when building a transaction rather than defaulting.
+  (`chainId` was already part of `encodeTx`'s bytes; what changed is that the
+  SDK no longer picks one for you.)
 - `CelestiaDA` refuses to send an auth token over cleartext HTTP.
+- `decode()` in `@johnhenry/raijin-da` caps decompressed output at
+  `MAX_DECOMPRESSED_SIZE` (16 MiB) and rejects with `DASizeLimitError` /
+  `DADecodeError` rather than propagating whatever the compression library
+  threw. `encode(data, { deflate })` and `decode(data, { inflate })` accept an
+  explicit codec for environments where the optional fflate import does not
+  resolve.
 
 ### Checklist for operators
 
@@ -51,4 +74,7 @@ them would differ regardless.
    state-format converter, and account records will not decode.
 3. Rebuild and redeploy every node, plus any client that signs transactions —
    an old client's signatures will be rejected by an upgraded validator.
+   Give every node the same `chainId`, and give two different deployments
+   two different ones: that is what now stops votes from one being counted
+   by the other.
 4. Re-seed genesis balances with the current `encodeAccount`.

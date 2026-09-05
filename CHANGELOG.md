@@ -8,6 +8,18 @@ account and receipt encodings, and the state root. A node running these
 changes cannot talk to one that isn't — different digests, different
 signatures, different roots.
 
+Vote payloads changed twice: first to cover the phase, view and sequence, and
+then again to cover the **chain id** and a **validator-set epoch**, so that a
+vote cannot be replayed onto a different deployment or counted across a
+membership change. `voteDigest()` now takes a single object, and `chainId` is
+required — with no default — on `PBFTConfig` and `ValidatorNodeConfig`.
+
+Two more unsafe defaults closed alongside them: `Wallet.fromKey()` imports
+non-extractable keys unless the call site asks otherwise (it previously
+hardcoded extractable, on the path persisted keys come back through), and
+`@johnhenry/raijin-da`'s `decode()` caps decompressed output at 16 MiB
+instead of running an unbounded `inflateSync` over untrusted DA bytes.
+
 **See [`MIGRATION.md`](./MIGRATION.md)** for the format-by-format inventory
 and the upgrade checklist. The short version: upgrade every node at once,
 from a fresh genesis, and discard persisted state (account records written by
