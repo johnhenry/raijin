@@ -30,6 +30,7 @@ export { InMemoryStateStore } from './state.js'
 export { hash, hashString, merkleRoot, equal, toHex, fromHex } from './hash.js'
 
 // Encoding
+export { Domain, type DomainTag } from './encoding.js'
 export {
   encodeBigInt,
   decodeBigInt,
@@ -40,6 +41,7 @@ export {
   encodeAccount,
   decodeAccount,
   encodeReceipt,
+  encodeStateEntry,
   encodeBlockHeader,
   blockHash,
 } from './encoding.js'

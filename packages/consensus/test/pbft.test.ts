@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 
-import { StateMachine, InMemoryStateStore, hash, type Block } from '@johnhenry/raijin-core'
+import { StateMachine, InMemoryStateStore, hash, encodeBlockHeader, type Block } from '@johnhenry/raijin-core'
 import { PBFTConsensus, ValidatorSet, PBFTPhase, voteDigest, NO_BLOCK_DIGEST } from '../src/index.js'
 import type { NewViewMessage, PrePrepareMessage, ViewChangeMessage } from '../src/types.js'
 import { MockNetwork, DeterministicNetwork, MockTimer, mockVerifier, mockSign, makeTestKey } from './helpers.js'
@@ -22,35 +22,17 @@ function makeBlock(number: bigint, proposer: Uint8Array): Block {
   }
 }
 
-/** Mirrors PBFTConsensus#serializeBlockHeader + hash — used to construct
- *  messages with a digest that will pass the real digest check. */
-function bigintToBytes(value: bigint): Uint8Array {
-  const hex = value.toString(16).padStart(16, '0')
-  const bytes = new Uint8Array(8)
-  for (let i = 0; i < 8; i++) {
-    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
-  }
-  return bytes
-}
-
+/**
+ * The digest PBFT agrees on: `H(encodeBlockHeader(header))`.
+ *
+ * This used to be a hand-copied reimplementation of the header layout, which
+ * is the one thing a test of a commitment must not be — it kept passing while
+ * silently pinning a *second* definition of the canonical bytes. It calls the
+ * shipped encoder now, so a change to the header format shows up here as
+ * changed digests rather than as agreement with an encoder nobody runs.
+ */
 async function computeDigest(block: Block): Promise<Uint8Array> {
-  const parts: Uint8Array[] = [
-    bigintToBytes(block.header.number),
-    block.header.parentHash,
-    block.header.stateRoot,
-    block.header.txRoot,
-    block.header.receiptRoot,
-    bigintToBytes(BigInt(block.header.timestamp)),
-    block.header.proposer,
-  ]
-  const totalLen = parts.reduce((sum, p) => sum + p.length, 0)
-  const result = new Uint8Array(totalLen)
-  let pos = 0
-  for (const part of parts) {
-    result.set(part, pos)
-    pos += part.length
-  }
-  return hash(result)
+  return hash(encodeBlockHeader(block.header))
 }
 
 /** Sign one vote the way PBFTConsensus does: over the domain-separated
