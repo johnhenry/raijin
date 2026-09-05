@@ -4,7 +4,8 @@
  */
 
 import type { StateStore, StateSnapshot } from './types.js'
-import { hash, equal } from './hash.js'
+import { hash, merkleRoot, fromHex } from './hash.js'
+import { encodeStateEntry } from './encoding.js'
 
 /**
  * In-memory state store backed by a sorted Map.
@@ -34,30 +35,34 @@ export class InMemoryStateStore implements StateStore {
     this.#data.delete(this.keyToString(key))
   }
 
+  /**
+   * Merkle root over every key→value pair, in key order.
+   *
+   * This used to be `H(key0 || value0 || key1 || value1 || ...)` with no
+   * length prefix on anything, so the root did not commit to where one field
+   * ended and the next began: a store holding key `0xab` with value `"cd"`
+   * and a store holding key `0xabcd` with an empty value flattened to the
+   * same bytes and produced the same root. A state root that two different
+   * states can share proves nothing about the state — and it is the value a
+   * block header carries.
+   *
+   * Each entry is now hashed through `encodeStateEntry` (domain-tagged,
+   * both fields length-prefixed) and the entry hashes are combined with
+   * `merkleRoot`, which is itself collision-resistant across leaf lists.
+   *
+   * Ordering is by the key's bytes, not `localeCompare`: locale-sensitive
+   * comparison is a property of the runtime, and two nodes that disagree
+   * about it would order the same state differently and derive different
+   * roots from identical data.
+   */
   async root(): Promise<Uint8Array> {
-    // Sort keys for determinism, then hash all key-value pairs
-    const entries = [...this.#data.entries()].sort(([a], [b]) => a.localeCompare(b))
+    const entries = [...this.#data.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
 
-    if (entries.length === 0) {
-      return hash(new Uint8Array(0))
-    }
+    const leaves = await Promise.all(
+      entries.map(([key, value]) => hash(encodeStateEntry(fromHex(key), value))),
+    )
 
-    // Concatenate all key-value pairs and hash
-    const parts: Uint8Array[] = []
-    for (const [key, value] of entries) {
-      const keyBytes = new TextEncoder().encode(key)
-      parts.push(keyBytes, value)
-    }
-
-    const totalLen = parts.reduce((sum, p) => sum + p.length, 0)
-    const combined = new Uint8Array(totalLen)
-    let pos = 0
-    for (const part of parts) {
-      combined.set(part, pos)
-      pos += part.length
-    }
-
-    return hash(combined)
+    return merkleRoot(leaves)
   }
 
   async snapshot(): Promise<StateSnapshot> {
