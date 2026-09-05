@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — hashed formats change before 0.0.1 (2026-09-04)
+
+The security fixes on this branch changed every format Raijin hashes or
+signs: vote payloads, Merkle roots, the block header, the transaction,
+account and receipt encodings, and the state root. A node running these
+changes cannot talk to one that isn't — different digests, different
+signatures, different roots.
+
+**See [`MIGRATION.md`](./MIGRATION.md)** for the format-by-format inventory
+and the upgrade checklist. The short version: upgrade every node at once,
+from a fresh genesis, and discard persisted state (account records written by
+an earlier build no longer decode).
+
 ## Unreleased — documentation overhaul + runnable examples (2026-08-25)
 
 Documentation only, plus example scripts and a CI smoke step — no library
