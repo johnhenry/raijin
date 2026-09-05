@@ -16,34 +16,54 @@ export async function hashString(str: string): Promise<Uint8Array> {
   return hash(encoder.encode(str))
 }
 
-/** Compute a Merkle root from an array of leaf hashes. */
+/** Domain tag for a leaf position in the Merkle tree. */
+const MERKLE_LEAF = 0x00
+/** Domain tag for an internal node. */
+const MERKLE_NODE = 0x01
+
+/** `H(0x00 || leaf)` — a leaf hash can never be mistaken for a node hash. */
+async function merkleLeaf(leaf: Uint8Array): Promise<Uint8Array> {
+  const buf = new Uint8Array(1 + leaf.length)
+  buf[0] = MERKLE_LEAF
+  buf.set(leaf, 1)
+  return hash(buf)
+}
+
+/** `H(0x01 || left || right)`. */
+async function merkleNode(left: Uint8Array, right: Uint8Array): Promise<Uint8Array> {
+  const buf = new Uint8Array(1 + left.length + right.length)
+  buf[0] = MERKLE_NODE
+  buf.set(left, 1)
+  buf.set(right, 1 + left.length)
+  return hash(buf)
+}
+
+/**
+ * Compute a Merkle root from an array of leaf hashes.
+ *
+ * Leaves and internal nodes are domain-separated (`0x00` / `0x01`), and an odd
+ * level promotes its last node instead of duplicating it. Without both, the
+ * tree has the CVE-2012-2459 shape: `[A, B, C]` pads to `[A, B, C, C]` and the
+ * two lists produce an identical root, so a block's `txRoot` does not uniquely
+ * commit to its transaction list. A lone leaf was also returned unhashed, so
+ * "root" and "leaf" were the same value at n = 1.
+ */
 export async function merkleRoot(leaves: Uint8Array[]): Promise<Uint8Array> {
   if (leaves.length === 0) {
-    return hash(new Uint8Array(0))
-  }
-  if (leaves.length === 1) {
-    return leaves[0]
+    return hash(new Uint8Array([MERKLE_LEAF]))
   }
 
-  // Pad to even length by duplicating the last leaf
-  const padded = [...leaves]
-  if (padded.length % 2 !== 0) {
-    padded.push(padded[padded.length - 1])
-  }
+  let level: Uint8Array[] = await Promise.all(leaves.map(merkleLeaf))
 
-  // Build tree bottom-up
-  let level = padded
   while (level.length > 1) {
-    // Pad intermediate levels to even length too
-    if (level.length % 2 !== 0) {
-      level.push(level[level.length - 1])
-    }
     const next: Uint8Array[] = []
-    for (let i = 0; i < level.length; i += 2) {
-      const combined = new Uint8Array(level[i].length + level[i + 1].length)
-      combined.set(level[i], 0)
-      combined.set(level[i + 1], level[i].length)
-      next.push(await hash(combined))
+    for (let i = 0; i + 1 < level.length; i += 2) {
+      next.push(await merkleNode(level[i], level[i + 1]))
+    }
+    // Odd level: promote the last node unchanged rather than pairing it with
+    // itself, which is what makes a duplicated final leaf indistinguishable.
+    if (level.length % 2 !== 0) {
+      next.push(level[level.length - 1])
     }
     level = next
   }

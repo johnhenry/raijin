@@ -40,6 +40,14 @@ export interface PrePrepareMessage {
   sequence: bigint
   block: Block
   digest: Uint8Array
+  /** The proposing leader's public key. */
+  from: Uint8Array
+  /** Signature over `voteDigest('pre-prepare', view, sequence, digest)`, by
+   *  `from`. Verified before the proposal is accepted — without it, a proposal
+   *  is authenticated only by whatever `from` the transport supplies, so any
+   *  transport that does not itself authenticate peers (a relay, a gossip hub,
+   *  a signalling server forwarding a self-declared id) could inject blocks. */
+  signature: Uint8Array
 }
 
 export interface PrepareMessage {
@@ -48,7 +56,10 @@ export interface PrepareMessage {
   sequence: bigint
   digest: Uint8Array
   from: Uint8Array
-  /** Signature over `digest`, by `from`. Verified before counting toward quorum. */
+  /** Signature over `voteDigest('prepare', view, sequence, digest)`, by `from`.
+   *  Verified before counting toward quorum. The phase tag, view and sequence
+   *  are inside the signed bytes so the vote cannot be replayed as a COMMIT,
+   *  or into another view or sequence. */
   signature: Uint8Array
 }
 
@@ -58,6 +69,7 @@ export interface CommitMessage {
   sequence: bigint
   digest: Uint8Array
   from: Uint8Array
+  /** Signature over `voteDigest('commit', view, sequence, digest)`, by `from`. */
   signature: Uint8Array
 }
 
@@ -66,8 +78,10 @@ export interface ViewChangeMessage {
   newView: bigint
   sequence: bigint
   from: Uint8Array
-  /** Signature over hash(newView, sequence), by `from`. Verified before
-   *  counting toward a NEW-VIEW quorum. */
+  /** Signature over `voteDigest('view-change', newView, sequence,
+   *  NO_BLOCK_DIGEST)`, by `from`. Verified before counting toward a NEW-VIEW
+   *  quorum. Replay of an old VIEW-CHANGE is stopped by the monotonic view
+   *  check in the handler, not by the signature. */
   signature: Uint8Array
 }
 

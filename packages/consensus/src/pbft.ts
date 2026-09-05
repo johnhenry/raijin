@@ -15,6 +15,7 @@
 import type { Block, StateMachine, TransactionReceipt, SignatureVerifier } from '@johnhenry/raijin-core'
 import { hash, merkleRoot, encodeReceipt, equal, toHex } from '@johnhenry/raijin-core'
 import { ValidatorSet } from './validator-set.js'
+import { voteDigest, NO_BLOCK_DIGEST, type VotePhase } from './vote.js'
 import type {
   NetworkTransport,
   ConsensusTimer,
@@ -47,9 +48,13 @@ export interface PBFTConfig {
   sign: (message: Uint8Array) => Promise<Uint8Array>
   /**
    * Verify a signature against a message and the claimed signer's public
-   * key. Used to authenticate PREPARE, COMMIT, and VIEW-CHANGE votes before
-   * they're counted toward quorum — without this, any peer that can reach
+   * key. Used to authenticate PRE-PREPARE, PREPARE, COMMIT, and VIEW-CHANGE
+   * votes before they're acted on — without this, any peer that can reach
    * `#handleMessage` could forge votes on behalf of any validator.
+   *
+   * Every vote is signed over a domain-separated payload (see `voteDigest`)
+   * that names the phase, the view and the sequence, so no signature is
+   * reusable in another phase or another round.
    */
   verify: SignatureVerifier
 }
@@ -149,18 +154,21 @@ export class PBFTConsensus {
     this.#sequence++
     this.#phase = PBFTPhase.PrePrepared
 
-    // Broadcast PRE-PREPARE
+    // Broadcast PRE-PREPARE, signed so that acceptance does not rest on the
+    // transport's `from` alone.
     const msg: PrePrepareMessage = {
       type: 'pre-prepare',
       view: this.#view,
       sequence: this.#sequence,
       block,
       digest,
+      from: this.#identity,
+      signature: await this.#signVote('pre-prepare', this.#view, this.#sequence, digest),
     }
     this.#transport.broadcast(msg)
 
     // Leader also sends PREPARE so other peers can count it
-    const prepareSignature = await this.#sign(digest)
+    const prepareSignature = await this.#signVote('prepare', this.#view, this.#sequence, digest)
     const prepare: PrepareMessage = {
       type: 'prepare',
       view: this.#view,
@@ -237,6 +245,10 @@ export class PBFTConsensus {
     const digest = await hash(blockBytes)
     if (!equal(digest, msg.digest)) return
 
+    // Verify the leader actually signed this proposal. `from` comes from the
+    // transport; the signature is what makes it mean something.
+    if (!(await this.#verifyVote('pre-prepare', msg.view, msg.sequence, digest, msg.signature, from))) return
+
     // Partial view-change safety mitigation: if this sequence was already
     // validly prepared (2f+1 PREPARE votes) at some prior view, refuse to
     // accept a *different* block for the same sequence. We can't yet
@@ -252,7 +264,7 @@ export class PBFTConsensus {
     this.#phase = PBFTPhase.PrePrepared
 
     // Send PREPARE
-    const signature = await this.#sign(digest)
+    const signature = await this.#signVote('prepare', this.#view, this.#sequence, digest)
     const prepare: PrepareMessage = {
       type: 'prepare',
       view: this.#view,
@@ -271,8 +283,7 @@ export class PBFTConsensus {
     if (msg.view !== this.#view) return
     if (msg.sequence !== this.#sequence) return
 
-    const valid = await this.#verify.verify(msg.digest, msg.signature, from)
-    if (!valid) return
+    if (!(await this.#verifyVote('prepare', msg.view, msg.sequence, msg.digest, msg.signature, from))) return
 
     await this.#addPrepare(msg.digest, from)
   }
@@ -281,16 +292,19 @@ export class PBFTConsensus {
     if (msg.view !== this.#view) return
     if (msg.sequence !== this.#sequence) return
 
-    const valid = await this.#verify.verify(msg.digest, msg.signature, from)
-    if (!valid) return
+    if (!(await this.#verifyVote('commit', msg.view, msg.sequence, msg.digest, msg.signature, from))) return
 
     await this.#addCommit(msg.digest, from)
   }
 
   async #handleViewChange(from: Uint8Array, msg: ViewChangeMessage): Promise<void> {
-    const digest = this.#viewChangeDigestBytes(msg.newView, msg.sequence)
-    const valid = await this.#verify.verify(digest, msg.signature, from)
-    if (!valid) return
+    // A view change only ever moves forward. A VIEW-CHANGE signature covers
+    // (newView, sequence) and nothing time-bound, so a recorded quorum stays
+    // valid forever; without this check, replaying one rewinds `#view` and
+    // clears every in-flight round, indefinitely, with no keys required.
+    if (msg.newView <= this.#view) return
+
+    if (!(await this.#verifyVote('view-change', msg.newView, msg.sequence, NO_BLOCK_DIGEST, msg.signature, from))) return
 
     const key = msg.newView.toString()
     if (!this.#viewChanges.has(key)) {
@@ -317,6 +331,10 @@ export class PBFTConsensus {
    * validator could force every other node to jump views at will.
    */
   async #handleNewView(_from: Uint8Array, msg: NewViewMessage): Promise<void> {
+    // Forward only — see #handleViewChange. A NEW-VIEW is the cheapest replay:
+    // one message carrying a recorded quorum.
+    if (msg.view <= this.#view) return
+
     const seenSenders = new Set<string>()
 
     for (const vc of msg.viewChanges) {
@@ -326,9 +344,7 @@ export class PBFTConsensus {
       const hex = toHex(vc.from)
       if (seenSenders.has(hex)) continue // dedup by sender
 
-      const digest = this.#viewChangeDigestBytes(vc.newView, vc.sequence)
-      const valid = await this.#verify.verify(digest, vc.signature, vc.from)
-      if (!valid) continue
+      if (!(await this.#verifyVote('view-change', vc.newView, vc.sequence, NO_BLOCK_DIGEST, vc.signature, vc.from))) continue
 
       seenSenders.add(hex)
     }
@@ -363,7 +379,7 @@ export class PBFTConsensus {
     this.#preparedCert.set(this.#sequence.toString(), digest)
 
     // Sign the digest and send COMMIT
-    const signature = await this.#sign(digest)
+    const signature = await this.#signVote('commit', this.#view, this.#sequence, digest)
     const commit: CommitMessage = {
       type: 'commit',
       view: this.#view,
@@ -443,8 +459,7 @@ export class PBFTConsensus {
 
   async #requestViewChange(): Promise<void> {
     const newView = this.#view + 1n
-    const digest = this.#viewChangeDigestBytes(newView, this.#sequence)
-    const signature = await this.#sign(digest)
+    const signature = await this.#signVote('view-change', newView, this.#sequence, NO_BLOCK_DIGEST)
     const msg: ViewChangeMessage = {
       type: 'view-change',
       newView,
@@ -469,6 +484,7 @@ export class PBFTConsensus {
    * tracked as follow-up work.
    */
   #doViewChange(newView: bigint): void {
+    if (newView <= this.#view) return
     this.#view = newView
     this.#phase = PBFTPhase.Idle
     this.#pendingBlock = null
@@ -542,13 +558,25 @@ export class PBFTConsensus {
     return bytes
   }
 
-  /** Deterministic bytes identifying a (newView, sequence) pair — what VIEW-CHANGE signatures cover. */
-  #viewChangeDigestBytes(newView: bigint, sequence: bigint): Uint8Array {
-    const a = this.#bigintToBytes(newView)
-    const b = this.#bigintToBytes(sequence)
-    const result = new Uint8Array(a.length + b.length)
-    result.set(a, 0)
-    result.set(b, a.length)
-    return result
+  /** Sign one vote over its domain-separated payload (see `voteDigest`). */
+  async #signVote(
+    phase: VotePhase,
+    view: bigint,
+    sequence: bigint,
+    digest: Uint8Array,
+  ): Promise<Uint8Array> {
+    return this.#sign(await voteDigest(phase, view, sequence, digest))
+  }
+
+  /** Verify one vote's signature against the claimed signer. */
+  async #verifyVote(
+    phase: VotePhase,
+    view: bigint,
+    sequence: bigint,
+    digest: Uint8Array,
+    signature: Uint8Array,
+    signer: Uint8Array,
+  ): Promise<boolean> {
+    return this.#verify.verify(await voteDigest(phase, view, sequence, digest), signature, signer)
   }
 }

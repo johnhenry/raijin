@@ -21,7 +21,7 @@ console.log('hashString(raijin) =', toHex(strDigest))
 const leaves = [
   await hashString('tx-a'),
   await hashString('tx-b'),
-  await hashString('tx-c'), // odd count — last leaf is duplicated for padding
+  await hashString('tx-c'), // odd count — the last node is promoted, not duplicated
 ]
 const root = await merkleRoot(leaves)
 console.log('merkleRoot(3)      =', toHex(root))
@@ -30,9 +30,16 @@ console.log('merkleRoot(3)      =', toHex(root))
 const swapped = await merkleRoot([leaves[1], leaves[0], leaves[2]])
 assert.ok(!equal(root, swapped), 'reordering leaves must change the root')
 
-// Edge cases: single leaf is returned as-is; empty input is hash of empty bytes
-assert.ok(equal(await merkleRoot([leaves[0]]), leaves[0]))
+// Edge cases: a single leaf is still hashed (a leaf is never itself a root),
+// and empty input has its own root
+assert.ok(!equal(await merkleRoot([leaves[0]]), leaves[0]))
+assert.equal((await merkleRoot([leaves[0]])).length, 32)
 assert.equal((await merkleRoot([])).length, 32)
+
+// An odd leaf count is padded by promoting the last node, not by duplicating
+// the last leaf — so a duplicated final transaction is a different root.
+assert.ok(!equal(root, await merkleRoot([...leaves, leaves[2]])),
+  'duplicating the last leaf must change the root')
 
 // Hex round-trip
 const hex = toHex(root)

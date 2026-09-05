@@ -54,13 +54,27 @@ export class ValidatorSet {
     return this.#validators[idx]
   }
 
-  /** Quorum size: 2f + 1 where n = 3f + 1. */
+  /**
+   * Quorum size: `n - f`, where `f = floor((n - 1) / 3)`.
+   *
+   * At the canonical PBFT sizes (`n = 3f + 1`: 1, 4, 7, 10, ...) this is
+   * exactly `2f + 1`. For every other `n` it is strictly larger, because
+   * `2f + 1` is only safe when `n = 3f + 1`.
+   *
+   * Safety needs any two quorums to share at least one honest node --
+   * `2q - n >= f + 1`. With `q = 2f + 1` that fails for every `n` that is not
+   * `3f + 1`, and at `n = 2` or `n = 3` it degenerates to `q = 1`: a single
+   * node reaching its own PREPARE and COMMIT quorum, finalizing blocks alone.
+   * With `q = n - f` it holds for all `n`.
+   *
+   *   n:  1  2  3  4  5  6  7  8  9 10
+   *   f:  0  0  0  1  1  1  2  2  2  3
+   *   q:  1  2  3  3  4  5  5  6  7  7
+   */
   quorumSize(): number {
     const n = this.#validators.length
     if (n === 0) return 0
-    // f = floor((n - 1) / 3)
-    const f = Math.floor((n - 1) / 3)
-    return 2 * f + 1
+    return n - this.maxFaults
   }
 
   /** Number of validators. */
