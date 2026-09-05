@@ -52,6 +52,7 @@ export class RaijinTestNode {
     this.store = new InMemoryStateStore()
 
     this.node = new ValidatorNode({
+      chainId: 1n,
       identity: {
         publicKey: config.publicKey,
         sign: config.sign,

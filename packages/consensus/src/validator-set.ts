@@ -2,11 +2,19 @@
  * Validator set management with deterministic leader rotation.
  */
 
-import { toHex } from '@johnhenry/raijin-core'
+import { toHex, hash, encodeBytes } from '@johnhenry/raijin-core'
+
+/**
+ * Domain tag for the epoch digest, so a validator-set identifier cannot
+ * collide with any other hash in the protocol.
+ */
+const EPOCH_TAG = new TextEncoder().encode('raijin/pbft/v2/validator-set')
 
 export class ValidatorSet {
   #validators: Uint8Array[]
   #indexMap: Map<string, number>
+  /** Memoized `epoch()`; dropped whenever the membership changes. */
+  #epoch: Uint8Array | null = null
 
   constructor(validators: Uint8Array[] = []) {
     this.#validators = [...validators]
@@ -19,6 +27,7 @@ export class ValidatorSet {
     for (let i = 0; i < this.#validators.length; i++) {
       this.#indexMap.set(toHex(this.#validators[i]), i)
     }
+    this.#epoch = null
   }
 
   /** Add a validator. Returns false if already present. */
@@ -27,6 +36,7 @@ export class ValidatorSet {
     if (this.#indexMap.has(key)) return false
     this.#indexMap.set(key, this.#validators.length)
     this.#validators.push(pubkey)
+    this.#epoch = null
     return true
   }
 
@@ -38,6 +48,48 @@ export class ValidatorSet {
     this.#validators.splice(idx, 1)
     this.#rebuildIndex()
     return true
+  }
+
+  /**
+   * The epoch: a 32-byte identifier for *this exact set, in this exact
+   * order*. Every vote signature covers it (see `voteDigest`).
+   *
+   * It is a digest of the membership rather than a counter, and that is the
+   * point. A counter only says how many times a set changed, so two nodes
+   * that applied *different* changes still agree on "epoch 2" and go on
+   * counting each other's votes. A digest makes the epoch the identity of the
+   * set: disagree about who is in it, and you disagree about the epoch, and
+   * votes stop crossing between the two. In particular a validator that has
+   * been removed cannot have its old, still-valid signatures counted toward
+   * the quorum of the set that removed it.
+   *
+   * Order is included because order is consensus-relevant here —
+   * `leaderForView` picks by index, so the same members in a different order
+   * elect different leaders and are genuinely a different set.
+   *
+   * Memoized; recomputed after `add()` or `remove()`.
+   */
+  async epoch(): Promise<Uint8Array> {
+    if (this.#epoch) return this.#epoch
+
+    // Length-prefix each key so that concatenation cannot lose the boundary
+    // between two of them — without it, sets with differently-sized keys
+    // could flatten to the same bytes.
+    const parts: Uint8Array[] = [EPOCH_TAG]
+    for (const validator of this.#validators) {
+      parts.push(encodeBytes(validator))
+    }
+
+    const total = parts.reduce((sum, p) => sum + p.length, 0)
+    const payload = new Uint8Array(total)
+    let pos = 0
+    for (const part of parts) {
+      payload.set(part, pos)
+      pos += part.length
+    }
+
+    this.#epoch = await hash(payload)
+    return this.#epoch
   }
 
   /** Check if a public key is in the validator set. */

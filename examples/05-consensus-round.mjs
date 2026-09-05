@@ -39,6 +39,7 @@ const manualTimer = { set: () => ({}), clear: () => {} }
 
 const consensus = new PBFTConsensus({
   identity: me,
+  chainId: 1n, // required: votes are signed against it, so there is no default
   validators,
   transport,
   timer: manualTimer,

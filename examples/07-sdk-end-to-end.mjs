@@ -48,6 +48,7 @@ await store.put(
 )
 
 const node = new ValidatorNode({
+  chainId: 1n,
   identity: {
     publicKey: validatorWallet.publicKey,
     sign: (msg) => validatorWallet.sign(msg),

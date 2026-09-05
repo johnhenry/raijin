@@ -32,6 +32,15 @@ import { PBFTPhase } from './types.js'
 export interface PBFTConfig {
   /** This node's public key. */
   identity: Uint8Array
+  /**
+   * Chain identifier — which deployment this node's votes are about.
+   *
+   * Required, with no default, for the same reason `chainId` is required on
+   * a transaction: a default is an id that every deployment which never
+   * chose one shares, and votes would then replay verbatim between them.
+   * Every vote signature covers it (see `voteDigest`).
+   */
+  chainId: bigint
   /** The validator set. */
   validators: ValidatorSet
   /** Network transport for sending/receiving messages. */
@@ -53,8 +62,9 @@ export interface PBFTConfig {
    * `#handleMessage` could forge votes on behalf of any validator.
    *
    * Every vote is signed over a domain-separated payload (see `voteDigest`)
-   * that names the phase, the view and the sequence, so no signature is
-   * reusable in another phase or another round.
+   * that names the chain, the validator-set epoch, the phase, the view and
+   * the sequence, so no signature is reusable in another phase, another
+   * round, another chain, or across a membership change.
    */
   verify: SignatureVerifier
 }
@@ -62,6 +72,7 @@ export interface PBFTConfig {
 export class PBFTConsensus {
   #identity: Uint8Array
   #identityHex: string
+  #chainId: bigint
   #validators: ValidatorSet
   #transport: NetworkTransport
   #timer: ConsensusTimer
@@ -103,8 +114,16 @@ export class PBFTConsensus {
   #onViewChange: ((newView: bigint) => void)[] = []
 
   constructor(config: PBFTConfig) {
+    // Guard the JS callers the type system does not reach: an undefined
+    // chainId would otherwise be signed as a chain id of its own, and every
+    // node that forgot one would agree with every other node that forgot one.
+    if (typeof config.chainId !== 'bigint') {
+      throw new TypeError('PBFTConsensus: chainId is required and must be a bigint')
+    }
+
     this.#identity = config.identity
     this.#identityHex = toHex(config.identity)
+    this.#chainId = config.chainId
     this.#validators = config.validators
     this.#transport = config.transport
     this.#timer = config.timer
@@ -537,6 +556,30 @@ export class PBFTConsensus {
     return encodeBlockHeader(block.header)
   }
 
+  /**
+   * The bytes of one vote (see `voteDigest`).
+   *
+   * `chainId` and the validator-set `epoch` come from *this* node, never from
+   * the message. That is what makes them scope rather than metadata: a peer
+   * cannot tell us which chain or which set its vote should count under, it
+   * can only produce a signature that either matches ours or does not.
+   */
+  async #voteBytes(
+    phase: VotePhase,
+    view: bigint,
+    sequence: bigint,
+    digest: Uint8Array,
+  ): Promise<Uint8Array> {
+    return voteDigest({
+      phase,
+      chainId: this.#chainId,
+      epoch: await this.#validators.epoch(),
+      view,
+      sequence,
+      digest,
+    })
+  }
+
   /** Sign one vote over its domain-separated payload (see `voteDigest`). */
   async #signVote(
     phase: VotePhase,
@@ -544,7 +587,7 @@ export class PBFTConsensus {
     sequence: bigint,
     digest: Uint8Array,
   ): Promise<Uint8Array> {
-    return this.#sign(await voteDigest(phase, view, sequence, digest))
+    return this.#sign(await this.#voteBytes(phase, view, sequence, digest))
   }
 
   /** Verify one vote's signature against the claimed signer. */
@@ -556,6 +599,10 @@ export class PBFTConsensus {
     signature: Uint8Array,
     signer: Uint8Array,
   ): Promise<boolean> {
-    return this.#verify.verify(await voteDigest(phase, view, sequence, digest), signature, signer)
+    return this.#verify.verify(
+      await this.#voteBytes(phase, view, sequence, digest),
+      signature,
+      signer,
+    )
   }
 }

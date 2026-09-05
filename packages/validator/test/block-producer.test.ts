@@ -96,6 +96,7 @@ describe('BlockProducer / ValidatorNode — receipt & chain-linkage integrity', 
   beforeEach(async () => {
     store = new InMemoryStateStore()
     node = new ValidatorNode({
+      chainId: 1n,
       identity: {
         publicKey: alice,
         sign: async () => alice,

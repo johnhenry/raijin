@@ -35,6 +35,16 @@ async function computeDigest(block: Block): Promise<Uint8Array> {
   return hash(encodeBlockHeader(block.header))
 }
 
+/** The chain these tests run on. Consensus has no default — see PBFTConfig. */
+const TEST_CHAIN_ID = 1n
+
+/**
+ * The validator set every peer in this file is built from. `signVote` needs
+ * its epoch to forge a vote that the peers will accept, the same way it needs
+ * their chain id.
+ */
+let currentValidators: ValidatorSet
+
 /** Sign one vote the way PBFTConsensus does: over the domain-separated
  *  payload from `voteDigest`, not over the bare block digest. */
 async function signVote(
@@ -43,8 +53,16 @@ async function signVote(
   view: bigint,
   sequence: bigint,
   digest: Uint8Array,
+  overrides: { chainId?: bigint; epoch?: Uint8Array } = {},
 ): Promise<Uint8Array> {
-  return mockSign(key)(await voteDigest(phase, view, sequence, digest))
+  return mockSign(key)(await voteDigest({
+    phase,
+    chainId: overrides.chainId ?? TEST_CHAIN_ID,
+    epoch: overrides.epoch ?? await currentValidators.epoch(),
+    view,
+    sequence,
+    digest,
+  }))
 }
 
 /** A validly-signed VIEW-CHANGE from `key`. */
@@ -93,6 +111,7 @@ describe('PBFTConsensus', () => {
   beforeEach(() => {
     network = new DeterministicNetwork()
     validators = new ValidatorSet([key1, key2, key3, key4])
+    currentValidators = validators
   })
 
   function createPeer(key: Uint8Array): { consensus: PBFTConsensus; timer: MockTimer } {
@@ -103,6 +122,7 @@ describe('PBFTConsensus', () => {
 
     const consensus = new PBFTConsensus({
       identity: key,
+      chainId: TEST_CHAIN_ID,
       validators,
       transport,
       timer,
@@ -574,6 +594,97 @@ describe('PBFTConsensus', () => {
   // A PREPARE is broadcast to every peer. If it signs the same bytes a COMMIT
   // signs, then every peer holds a valid COMMIT from every prepared validator,
   // and the commit phase proves nothing. See issue #17.
+  describe('vote signatures are bound to their chain and validator set', () => {
+    // A vote that carries neither is only ever "some block at view v,
+    // sequence s" — it counts on any chain that happens to share a validator,
+    // and it keeps counting after that validator has been removed from the
+    // set. See issue #25.
+    it('does not count a PREPARE signed for a different chain', async () => {
+      const p1 = createPeer(key1) // leader; quorum = 3 of 4
+      p1.consensus.start()
+
+      let finalized = 0
+      p1.consensus.onBlockFinalized(() => finalized++)
+
+      const block = makeBlock(1n, key1)
+      const digest = await computeDigest(block)
+      await p1.consensus.propose(block)
+
+      // Two PREPAREs that are perfectly valid — on chain 2. Everything else
+      // about them matches: real keys, real signatures, right view, right
+      // sequence, right digest.
+      for (const key of [key2, key3]) {
+        network.createTransport(key).send(key1, {
+          type: 'prepare' as const, view: 0n, sequence: 1n, digest, from: key,
+          signature: await signVote(key, 'prepare', 0n, 1n, digest, { chainId: 2n }),
+        })
+      }
+      await network.drainAll()
+
+      // Quorum needs 3 and the leader's own vote is 1: these two must not
+      // have been counted, or the phase would have advanced.
+      expect(p1.consensus.phase).toBe(PBFTPhase.PrePrepared)
+      expect(finalized).toBe(0)
+
+      // The same two votes, signed for the right chain, do reach quorum —
+      // so the rejection above was the chain binding and not some unrelated
+      // reason the messages were dropped.
+      for (const key of [key2, key3]) {
+        network.createTransport(key).send(key1, {
+          type: 'prepare' as const, view: 0n, sequence: 1n, digest, from: key,
+          signature: await signVote(key, 'prepare', 0n, 1n, digest),
+        })
+      }
+      await network.drainAll()
+      expect(p1.consensus.phase).not.toBe(PBFTPhase.PrePrepared)
+
+      p1.consensus.stop()
+    })
+
+    it('does not count a PREPARE signed under a different validator set', async () => {
+      const p1 = createPeer(key1)
+      p1.consensus.start()
+
+      const block = makeBlock(1n, key1)
+      const digest = await computeDigest(block)
+      await p1.consensus.propose(block)
+
+      // The epoch of a set that key4 has been removed from. A validator
+      // voting under that set is not voting under this one.
+      const shrunk = new ValidatorSet([key1, key2, key3])
+      const otherEpoch = await shrunk.epoch()
+      expect(otherEpoch).not.toEqual(await validators.epoch())
+
+      for (const key of [key2, key3]) {
+        network.createTransport(key).send(key1, {
+          type: 'prepare' as const, view: 0n, sequence: 1n, digest, from: key,
+          signature: await signVote(key, 'prepare', 0n, 1n, digest, { epoch: otherEpoch }),
+        })
+      }
+      await network.drainAll()
+
+      expect(p1.consensus.phase).toBe(PBFTPhase.PrePrepared)
+
+      p1.consensus.stop()
+    })
+
+    it('refuses to build a consensus engine with no chainId', () => {
+      // Required at the type level; this is the JS caller the types miss.
+      // A default would be an id every deployment that forgot one shares.
+      const config = {
+        identity: key1,
+        validators,
+        transport: network.createTransport(key1),
+        timer: new MockTimer(),
+        stateMachine: new StateMachine(new InMemoryStateStore(), mockVerifier),
+        sign: mockSign(key1),
+        verify: mockVerifier,
+      }
+      expect(() => new PBFTConsensus(config as unknown as ConstructorParameters<typeof PBFTConsensus>[0]))
+        .toThrow(/chainId is required/)
+    })
+  })
+
   describe('vote signatures are bound to their phase, view and sequence', () => {
     it('does not accept a PREPARE signature replayed as that validator COMMIT', async () => {
       const p1 = createPeer(key1) // leader; quorum = 3 of 4

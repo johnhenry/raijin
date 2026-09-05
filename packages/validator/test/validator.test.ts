@@ -162,6 +162,7 @@ describe('ValidatorNode', () => {
     transport = new LoopbackTransport(alice)
 
     node = new ValidatorNode({
+      chainId: 1n,
       identity: {
         publicKey: alice,
         sign: async (msg) => alice,
@@ -208,6 +209,7 @@ describe('ValidatorNode', () => {
 
   it('rejects a transaction with a bad signature before it enters the mempool', async () => {
     const badNode = new ValidatorNode({
+      chainId: 1n,
       identity: {
         publicKey: alice,
         sign: async () => alice,
@@ -240,6 +242,7 @@ describe('ValidatorNode', () => {
     // Create a node that is NOT the leader (bob, but leader rotation gives alice view 0)
     const bobTransport = new LoopbackTransport(bob)
     const bobNode = new ValidatorNode({
+      chainId: 1n,
       identity: {
         publicKey: bob,
         sign: async (msg) => bob,

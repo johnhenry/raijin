@@ -29,6 +29,7 @@ await store.put(
 )
 
 const node = new ValidatorNode({
+  chainId: 1n,
   identity: {
     publicKey: alice,
     sign: async () => new Uint8Array(64), // consensus-message signer
