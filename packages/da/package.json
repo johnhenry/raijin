@@ -22,10 +22,11 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "vitest run",
+    "test": "vitest run && npm run test:node",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test:node": "node --test test/default-inflate.node.test.mjs"
   },
   "license": "MIT",
   "dependencies": {
@@ -40,8 +41,12 @@
     }
   },
   "devDependencies": {
-    "typescript": "^5.7",
+    "fflate": "^0.8.3",
     "tsup": "^8",
+    "typescript": "^5.7",
     "vitest": "^3"
+  },
+  "optionalDependencies": {
+    "fflate": "^0.8.3"
   }
 }

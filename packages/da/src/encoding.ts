@@ -317,12 +317,34 @@ async function defaultInflate(): Promise<Inflate> {
     )
   }
   return (body, expected) => {
-    // Sizing `out` at exactly the expected length is what makes this bounded:
-    // fflate refuses to grow a buffer the caller supplied, so a stream that
-    // wants to produce more throws here rather than allocating. It also means
-    // the returned length is unambiguous — we never have to guess whether
-    // fflate handed back a trimmed view or the padded buffer.
-    return fflate.inflateSync(body, { out: new Uint8Array(expected) })
+    /*
+     * `out` is sized at expected + 1, and the extra byte is the whole point.
+     *
+     * The bound is what stops a zip bomb: fflate will not grow a buffer the
+     * caller supplied, so an over-long stream cannot force an allocation.
+     * This comment used to say such a stream "throws here". IT DOES NOT.
+     * fflate SILENTLY TRUNCATES to the buffer it was given and returns
+     * normally, so sizing `out` at exactly `expected` made a lying frame
+     * indistinguishable from an honest one: the output was `expected` bytes,
+     * the post-inflation length check compared equal, and decode() handed the
+     * caller silently truncated data as genuine DA content.
+     *
+     * Measured: a frame declaring 1024 bytes and carrying a compressed 8 MiB
+     * payload decoded without error and returned 1024 bytes.
+     *
+     * With one spare byte, the two cases separate. fflate trims when the
+     * stream ends inside the buffer and fills it when the stream does not, so
+     * a result of exactly expected + 1 means more data was coming — which is
+     * the lie, caught before anything downstream sees it. The memory bound is
+     * unchanged in substance: one byte.
+     */
+    const out = fflate.inflateSync(body, { out: new Uint8Array(expected + 1) })
+    if (out.length > expected) {
+      throw new DADecodeError(
+        `compressed payload produced more than the declared ${expected} bytes`,
+      )
+    }
+    return out
   }
 }
 
