@@ -170,6 +170,7 @@ describe('Byzantine proposer: 4-node cluster', () => {
    */
   it('cannot fork the cluster under any of a range of seeded message interleavings', async () => {
     let seedsThatFinalized = 0
+    const heightsBySeed = new Map<number, number>()
     for (const seed of [1, 2, 3, 7, 42, 1337]) {
       const { orch, liar, blockA, blockB } = await equivocatingCluster({ seed })
       orch.network.setDeliveryOrder('random')
@@ -186,6 +187,7 @@ describe('Byzantine proposer: 4-node cluster', () => {
 
       const noFork = await orch.check(new NoForkChecker())
       expect(noFork.passed, `seed ${seed}: ${noFork.details ?? ''}`).toBe(true)
+      heightsBySeed.set(seed, noFork.heightsCompared ?? 0)
 
       const finalized = [...orch.nodes.values()].flatMap((n) => n.finalizedBlocks)
       const tags = new Set(finalized.map((b) => b.header.txRoot[0]))
@@ -202,13 +204,38 @@ describe('Byzantine proposer: 4-node cluster', () => {
       }
     }
 
-    // Safety is trivial when nothing happens anywhere, so the sweep is only
-    // evidence if some of it actually reached a decision. As measured, 3 of
-    // these 6 seeds finalize and 3 stall on the dropped-out-of-order-vote
-    // behaviour described above; the assertion is left loose rather than
-    // pinned to 3, because that number is a property of the current message
-    // handling and not something a Byzantine test should freeze.
-    expect(seedsThatFinalized).toBeGreaterThan(0)
+    /*
+     * Safety is trivial when nothing happens anywhere, so the sweep is only
+     * evidence if some of it actually reached a decision.
+     *
+     * The comment here used to say "3 of these 6 seeds finalize and 3 stall",
+     * and left the assertion loose rather than pinned, on the reasoning that
+     * the number is a property of message handling and not a spec. That
+     * reasoning is sound and the looseness still hid a real regression:
+     * measured, ONE seed finalizes, not three. Five stall on the
+     * dropped-out-of-order-vote behaviour, NoForkChecker compares zero
+     * heights for each, and `passed: true` means nothing was verified. A
+     * `> 0` backstop passes at 1 of 6 exactly as it would at 1 of 100, so the
+     * drift from 3 to 1 produced no failure and the file went on documenting
+     * coverage it did not have.
+     *
+     * So the count is pinned -- not as a specification, but as a tripwire.
+     * If message handling changes and more seeds reach a decision, that is
+     * good news and this number should be raised deliberately, with the
+     * comment updated to match. What must not happen again is the number
+     * falling silently.
+     */
+    expect(
+      seedsThatFinalized,
+      'seeds reaching a decision changed; this is a property of message handling, ' +
+        'not a spec -- update the number and this comment deliberately. ' +
+        `Heights compared per seed: ${JSON.stringify([...heightsBySeed])}`,
+    ).toBe(1)
+
+    // And the sweep must have compared something somewhere, or every safety
+    // assertion above held vacuously.
+    const totalHeights = [...heightsBySeed.values()].reduce((a, b) => a + b, 0)
+    expect(totalHeights, 'the whole sweep verified nothing').toBeGreaterThan(0)
   })
 
   /**
