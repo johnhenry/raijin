@@ -25,7 +25,11 @@ export class SeededPRNG {
     s1 ^= s0 >> 26n
     this.#s1 = s1 & 0xFFFFFFFFFFFFFFFFn
     const result = ((this.#s0 + this.#s1) & 0xFFFFFFFFFFFFFFFFn)
-    return Number(result & 0x1FFFFFFFFFFFFFn) / 0x20000000000000
+    // xorshift128+'s low bits fail linearity tests that its high bits pass —
+    // the usual advice (and what splitmix64/xoshiro derivatives do) is to
+    // consume the top bits of the word, not the bottom ones. Shifting right
+    // by 11 keeps the high 53 bits of the 64-bit word for the float mantissa.
+    return Number(result >> 11n) / 0x20000000000000
   }
 
   /** Returns an integer in [0, max) */

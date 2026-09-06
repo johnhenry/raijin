@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.0.2 (2026-09-06)
+
+**`@johnhenry/raijin-consensus`**
+
+- **Full prepared-certificate carry-over on view change.** `#doViewChange`
+  previously only guarded against a *conflicting* re-proposal at a sequence
+  that was already validly prepared in a prior view (`#preparedCert`); it
+  could not get the original block re-proposed, so a view change stalled
+  progress even when the new leader itself had prepared the block. The new
+  leader now automatically re-proposes the block it already prepared (kept
+  in the new `#preparedBlock` map, alongside `#preparedCert`) the moment it
+  becomes leader — no external `propose()` call needed. A new leader with no
+  certificate for the sequence (never having seen the round) still falls
+  back to normal block production, and the existing conflict guard is
+  unchanged. See `packages/consensus/test/byzantine.test.ts` — "a new leader
+  that already prepared the block automatically re-proposes and finalizes
+  it".
+
+**`@johnhenry/raijin-validator`**
+
+- No code change. Version bump only, to pull in the fixed
+  `@johnhenry/raijin-consensus@^0.0.2`.
+
+**`raijin-test-harness`** (internal, unpublished)
+
+- `SeededPRNG.next()` now returns the high 53 bits of the xorshift128+ word
+  instead of the low 53 bits — the low bits of xorshift128+ fail linearity
+  tests that the high bits pass, which is the standard reason to avoid them
+  in a float generator.
+- Added test coverage for `removeDelay` and `resetFaults`, previously
+  unexercised by any test.
+
 ## 0.0.1 — the first release that is safe to run (2026-09-04)
 
 All six published packages, together. **Upgrade from `0.0.0`.**

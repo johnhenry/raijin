@@ -326,6 +326,65 @@ describe('Byzantine validators', () => {
 
       for (const p of [p2, p3, p4]) p.consensus.stop()
     })
+
+    /**
+     * The case the previous test had to fake: a new leader that HAD
+     * prepared the block itself. Full prepared-certificate carry-over means
+     * it does not need anyone to hand it the block — becoming leader is
+     * enough to make it re-propose what it already knows was prepared, and
+     * the cluster should actually finalize on it, not just fail to fork.
+     *
+     * Block X prepares on {k2, k3} this time (k2 is the leader of the next
+     * view), with the Byzantine leader withholding its own COMMIT so X
+     * stalls one vote short of a COMMIT quorum — prepared, not committed,
+     * same as the previous test, except now the future new leader is one of
+     * the two honest preparers instead of being ignorant of the round.
+     */
+    it('a new leader that already prepared the block automatically re-proposes and finalizes it', async () => {
+      const byz = makeTestKey(1) // leader for view 0
+      const k2 = makeTestKey(2) // leader for view 1
+      const k3 = makeTestKey(3)
+      const k4 = makeTestKey(4)
+      const validators = new ValidatorSet([byz, k2, k3, k4])
+
+      const p2 = honestPeer(k2, validators)
+      const p3 = honestPeer(k3, validators)
+      const p4 = honestPeer(k4, validators)
+
+      const blockX = makeBlock(1n, byz, 0x33)
+      const liar = new ByzantinePeer(byz, network.createTransport(byz), byzOpts(validators))
+      await liar.equivocate({
+        view: 0n,
+        sequence: 1n,
+        groups: [{ targets: [k2, k3], block: blockX }],
+        commit: false,
+      })
+      await settle()
+
+      // Prepared (2 honest + the liar's forged PREPARE = quorum 3), not
+      // committed (2 honest commits only — the liar withheld its COMMIT).
+      expect(p2.consensus.phase).toBe(PBFTPhase.Prepared)
+      expect(p3.consensus.phase).toBe(PBFTPhase.Prepared)
+      // k4 never saw a proposal at all.
+      expect(p4.consensus.phase).toBe(PBFTPhase.Idle)
+      expect([...p2.finalized, ...p3.finalized, ...p4.finalized]).toHaveLength(0)
+
+      // ── View change to view 1 — k2, the new leader, already prepared X ──
+      for (const p of [p2, p3, p4]) p.timer.advance(600)
+      await settle()
+
+      for (const p of [p2, p3, p4]) expect(p.consensus.currentView).toBe(1n)
+      expect(p2.consensus.isLeader).toBe(true)
+
+      // No external propose() call anywhere in this test: becoming leader
+      // must be enough by itself. The whole cluster converges on X.
+      for (const p of [p2, p3, p4]) {
+        expect(p.finalized).toHaveLength(1)
+        expect(blockTag(p.finalized[0])).toBe(0x33)
+      }
+
+      for (const p of [p2, p3, p4]) p.consensus.stop()
+    })
   })
 
   describe('an equivocating voter', () => {

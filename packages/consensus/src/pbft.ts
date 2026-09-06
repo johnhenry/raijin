@@ -97,13 +97,22 @@ export class PBFTConsensus {
   /**
    * Sequence → digest of the last block that reached a PREPARE quorum
    * ("prepared certificate") at that sequence, across all views. Not
-   * cleared on view change — this is a partial mitigation for the lack of
-   * full prepared-certificate carry-over in NEW-VIEW: it stops a new leader
-   * from getting a *conflicting* block accepted at a sequence that was
-   * already validly prepared, even though it can't yet automatically
-   * re-propose the original block. See tracking issue for full carry-over.
+   * cleared on view change. Serves two purposes: `#handlePrePrepare` uses
+   * it to refuse a *conflicting* re-proposal at an already-prepared
+   * sequence, and `#doViewChange` uses it (together with `#preparedBlock`)
+   * to automatically carry the prepared block itself forward into the new
+   * view when this node becomes the new leader.
    */
   #preparedCert = new Map<string, Uint8Array>()
+  /**
+   * Sequence → the actual `Block` behind `#preparedCert`'s digest for that
+   * sequence. `#preparedCert` alone is enough to *reject* a conflicting
+   * proposal, but re-proposing the original block needs its full content,
+   * not just the digest that commits to it — so this is kept alongside it
+   * with the same lifecycle (set in `#onPrepared`, deleted in
+   * `#onCommitted`, never cleared by a view change).
+   */
+  #preparedBlock = new Map<string, Block>()
 
   // ── Timers ──
   #blockTimer: TimerHandle | null = null
@@ -335,7 +344,7 @@ export class PBFTConsensus {
 
     const count = this.#viewChanges.get(key)!.size
     if (count >= this.#validators.quorumSize()) {
-      this.#doViewChange(msg.newView)
+      await this.#doViewChange(msg.newView)
     }
   }
 
@@ -370,7 +379,7 @@ export class PBFTConsensus {
 
     if (seenSenders.size < this.#validators.quorumSize()) return
 
-    this.#doViewChange(msg.view)
+    await this.#doViewChange(msg.view)
   }
 
   // ── Prepare/Commit collection ───────────────────────────────────────
@@ -392,10 +401,17 @@ export class PBFTConsensus {
     if (this.#phase !== PBFTPhase.PrePrepared) return
     this.#phase = PBFTPhase.Prepared
 
-    // Record the prepared certificate for this sequence (see #preparedCert
-    // docs) — this survives view changes so a later view can't silently
-    // override an already-prepared block with a conflicting one.
+    // Record the prepared certificate — and the block it certifies — for
+    // this sequence (see #preparedCert / #preparedBlock docs). Both survive
+    // view changes: the digest so a later view can't silently override an
+    // already-prepared block with a conflicting one, the block so that if
+    // *this* node becomes the new leader it can automatically re-propose
+    // the very block it already prepared rather than only being able to
+    // reject conflicts.
     this.#preparedCert.set(this.#sequence.toString(), digest)
+    if (this.#pendingBlock) {
+      this.#preparedBlock.set(this.#sequence.toString(), this.#pendingBlock)
+    }
 
     // Sign the digest and send COMMIT
     const signature = await this.#signVote('commit', this.#view, this.#sequence, digest)
@@ -460,8 +476,10 @@ export class PBFTConsensus {
     this.#prepares.clear()
     this.#commits.clear()
     // This sequence is finalized — no future view change can conflict with
-    // it, so the prepared-certificate guard is no longer needed for it.
+    // it, so the prepared-certificate guard (and the block it would have
+    // carried forward) is no longer needed for it.
     this.#preparedCert.delete(finalizedSequence.toString())
+    this.#preparedBlock.delete(finalizedSequence.toString())
 
     // If we're the leader, schedule next block
     if (this.isLeader) {
@@ -495,16 +513,20 @@ export class PBFTConsensus {
   }
 
   /**
-   * Apply a view change. NOTE: this does not carry forward the highest
-   * prepared certificate from the old view (full PBFT view-change requires
-   * the new leader to re-propose any block that reached a PREPARE quorum in
-   * a prior view, at the same sequence). `#preparedCert` is a partial
-   * mitigation — see its docs and `#handlePrePrepare` — that prevents a
-   * *conflicting* re-proposal at an already-prepared sequence, but does not
-   * by itself get the original block re-proposed. Full carry-over is
-   * tracked as follow-up work.
+   * Apply a view change, carrying forward the highest prepared certificate
+   * from the old view: if this node becomes the new leader and already
+   * holds a prepared certificate (`#preparedCert` + `#preparedBlock`) for
+   * the current sequence, it automatically re-proposes that exact block
+   * under the new view instead of waiting for a fresh `propose()` call —
+   * which is what closes the gap `#preparedCert` alone could only guard
+   * (reject a conflicting re-proposal) but not fix (get the original block
+   * re-proposed so the round can still finalize). A new leader that never
+   * itself prepared the block (e.g. it was on the far side of a partition)
+   * has no certificate to carry and falls back to normal block production;
+   * `#handlePrePrepare`'s `#preparedCert` check still protects that case
+   * against a conflicting proposal from anyone.
    */
-  #doViewChange(newView: bigint): void {
+  async #doViewChange(newView: bigint): Promise<void> {
     if (newView <= this.#view) return
     this.#view = newView
     this.#phase = PBFTPhase.Idle
@@ -518,11 +540,55 @@ export class PBFTConsensus {
       handler(newView)
     }
 
-    // If we're the new leader, start proposing
     if (this.isLeader) {
-      this.#startBlockTimer()
+      const seqKey = this.#sequence.toString()
+      const carriedDigest = this.#preparedCert.get(seqKey)
+      const carriedBlock = this.#preparedBlock.get(seqKey)
+      if (carriedDigest && carriedBlock) {
+        await this.#reProposeCarried(carriedBlock, carriedDigest)
+      } else {
+        this.#startBlockTimer()
+      }
     }
     this.#resetViewTimer()
+  }
+
+  /**
+   * Re-propose, under the new (current) view, a block that already reached
+   * a PREPARE quorum at the current sequence in a prior view. Mirrors
+   * `propose()`'s PRE-PREPARE/PREPARE broadcast, except the sequence is not
+   * incremented and the digest is not recomputed — every honest replica
+   * that prepared this block already agrees on that exact digest, and
+   * recomputing it could only reproduce it or paper over a bug, never
+   * legitimately change it.
+   */
+  async #reProposeCarried(block: Block, digest: Uint8Array): Promise<void> {
+    this.#pendingBlock = block
+    this.#pendingDigest = digest
+    this.#phase = PBFTPhase.PrePrepared
+
+    const msg: PrePrepareMessage = {
+      type: 'pre-prepare',
+      view: this.#view,
+      sequence: this.#sequence,
+      block,
+      digest,
+      from: this.#identity,
+      signature: await this.#signVote('pre-prepare', this.#view, this.#sequence, digest),
+    }
+    this.#transport.broadcast(msg)
+
+    const prepareSignature = await this.#signVote('prepare', this.#view, this.#sequence, digest)
+    const prepare: PrepareMessage = {
+      type: 'prepare',
+      view: this.#view,
+      sequence: this.#sequence,
+      digest,
+      from: this.#identity,
+      signature: prepareSignature,
+    }
+    this.#transport.broadcast(prepare)
+    await this.#addPrepare(digest, this.#identity)
   }
 
   // ── Timers ──────────────────────────────────────────────────────────

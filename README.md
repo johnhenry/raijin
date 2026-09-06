@@ -100,9 +100,9 @@ What it provides:
 
 Why it stays unpublished: it reaches into `../../consensus/test/helpers.ts`
 for its mock network/timer (a path that only exists in this repo), and its
-multi-node tests are timing-sensitive by nature — the 25 harness tests are
+multi-node tests are timing-sensitive by nature — the 27 harness tests are
 known to be flaky under load, which is acceptable for internal scenario
-testing but not something to ship. The 229 tests across the six publishable
+testing but not something to ship. The 230 tests across the six publishable
 packages are deterministic; CI's example smoke step is also restricted to
 single-node scenarios for the same reason (see
 [examples/README.md](examples/README.md)).
@@ -112,6 +112,23 @@ that sends two different blocks for one sequence, and votes replayed across
 phases. Both were proven non-vacuous by injection — restoring the old
 `2f+1` quorum produces a real fork across honest replicas, and unbinding a
 vote's phase lets a block finalize on a manufactured commit quorum.
+
+## Validator-set size
+
+Quorum is `n - f` where `f = maxFaults = floor((n - 1) / 3)` (see
+`ValidatorSet.quorumSize`/`maxFaults`, asserted in
+`packages/consensus/test/validator-set.test.ts`). That formula is safe at
+*any* `n`, but it only tolerates a fault when `n >= 3f + 1` with `f >= 1`,
+i.e. **`n >= 4`**:
+
+| `n` | `f` (tolerated faults) | quorum | notes |
+|---|---|---|---|
+| 1–3 | 0 | `n` | safety holds, but *every* validator must be online and honest — one crash or lie halts the cluster. `smoke.test.ts` / the 3-node `multi-block.test.ts` / `credit-transfer.test.ts` scenarios run here deliberately, as the happy-path/no-fault case. |
+| 4–6 | 1 | `n - 1` | smallest configuration with real Byzantine tolerance. Every Byzantine test in `packages/consensus/test/byzantine.test.ts` and the 4-validator harness scenarios run at `n = 4`. |
+| `3f + 1`+ | `f` | `n - f` | general case. |
+
+There is no supported *upper* bound enforced in code; larger `n` has not
+been load-tested here.
 
 ## Design Principles
 

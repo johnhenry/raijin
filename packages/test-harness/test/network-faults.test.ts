@@ -93,6 +93,33 @@ describe('PartitionableNetwork fault primitives', () => {
     expect(received).toEqual([1n])
   })
 
+  it('stops delaying an edge once removeDelay is called', async () => {
+    const { net, a, b, ta, received } = pair()
+    net.addDelay(a, b, 500)
+    net.removeDelay(a, b)
+    ta.send(b, note(1n))
+
+    // No delay recorded for the edge any more, so the message is
+    // deliverable immediately — no advanceTime needed.
+    expect(await net.drainAll()).toBe(1)
+    expect(received).toEqual([1n])
+  })
+
+  it('resetFaults clears partitions, delays and drop rates together', async () => {
+    const { net, a, b, ta, received } = pair(7)
+    net.partition([a], [b])
+    net.addDelay(a, b, 500)
+    net.addDropRate(a, b, 1)
+
+    net.resetFaults()
+
+    // Partition healed, delay gone, drop rate gone — a message sent now
+    // should arrive in this same drain, not be blocked, held or dropped.
+    ta.send(b, note(1n))
+    expect(await net.drainAll()).toBe(1)
+    expect(received).toEqual([1n])
+  })
+
   it('blocks a partitioned edge in both directions and restores it on heal', async () => {
     const { net, a, b, ta, received } = pair()
     net.partition([a], [b])
