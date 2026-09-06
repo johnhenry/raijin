@@ -9,8 +9,8 @@
   },
   "dependencies": {
     "@johnhenry/raijin-core": "^0.0.1",
-    "@johnhenry/raijin-consensus": "^0.0.1",
-    "@johnhenry/raijin-validator": "^0.0.1"
+    "@johnhenry/raijin-consensus": "^0.0.2",
+    "@johnhenry/raijin-validator": "^0.0.2"
   },
   "devDependencies": {
     "vitest": "^3",
