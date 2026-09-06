@@ -76,9 +76,35 @@ describe('Partition: 4-node cluster', () => {
     const ok = await orch.produceBlock(keys[0], keys[1], 25n)
     expect(ok).toBe(true)
 
+    /*
+     * Progress first, THEN agreement. Both checkers below pass vacuously when
+     * nothing was committed: GossipConvergenceChecker compares each node's
+     * LAST finalized block, so four nodes all still stuck at the pre-partition
+     * height 1 look perfectly converged, and NoForkChecker groups finalized
+     * blocks by height, so a height nobody reached is simply absent from the
+     * map.
+     *
+     * `ok` does not cover it either -- produceBlock returns true as soon as
+     * the leader yields a block and the network drains, without checking that
+     * a quorum committed. Injecting `if (this.#view > 0n) return` into PBFT's
+     * #onPrepared, so no round after any view change ever commits, left this
+     * test green while leader-crash.test.ts failed on exactly this assertion.
+     *
+     * The partition healed and a view change happened, so the whole point is
+     * that the network got PAST height 1.
+     */
+    for (const [id, node] of orch.nodes) {
+      expect(node.latestBlock!.header.number, `node ${id} advanced past the partition`).toBe(2n)
+    }
+
     // All nodes should converge
     const convergence = await orch.check(new GossipConvergenceChecker())
     expect(convergence.passed).toBe(true)
-    expect((await orch.check(new NoForkChecker())).passed).toBe(true)
+
+    const noFork = await orch.check(new NoForkChecker())
+    expect(noFork.passed).toBe(true)
+    // And it compared something: "no forks" across zero heights is not a
+    // safety result. See raijin#37.
+    expect(noFork.heightsCompared ?? 0, 'the fork check verified nothing').toBeGreaterThan(0)
   })
 })

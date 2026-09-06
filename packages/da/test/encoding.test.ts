@@ -212,7 +212,50 @@ describe('DA encoding', () => {
       encoded.set(lengthHeader, 3)
       encoded.set(compressed, 3 + lengthHeader.length)
 
-      await expect(decode(encoded, { inflate: unboundedInflate })).rejects.toThrow(DADecodeError)
+      /*
+       * `DASizeLimitError extends DADecodeError`, so asserting the parent
+       * cannot tell the two adjacent guards apart. This input trips the
+       * declared-length check, NOT the size cap: `out.length > limit`
+       * compares 4 MiB against maxDecompressedSize (16 MiB) and is false, so
+       * only `out.length !== declared` fires. Deleting the size cap left this
+       * test green; deleting the length check fails it.
+       *
+       * Asserting the exact class pins which one is doing the work.
+       */
+      const rejection = await decode(encoded, { inflate: unboundedInflate }).then(
+        () => null,
+        (err: unknown) => err,
+      )
+      expect(rejection).toBeInstanceOf(DADecodeError)
+      expect(rejection).not.toBeInstanceOf(DASizeLimitError)
+      expect(String((rejection as Error).message)).toMatch(/declared/)
+    })
+
+    it('trips the size cap, distinguishably, when output exceeds it', async () => {
+      /*
+       * The guard the test above cannot reach. It needs output larger than
+       * `maxDecompressedSize`, not merely larger than the declared length --
+       * and it must be asserted as DASizeLimitError specifically, or the
+       * parent class swallows the distinction again.
+       */
+      const cap = 1024
+      const real = new Uint8Array(64 * 1024).fill(0x5a)
+      const compressed = deflate(real)
+
+      const lengthHeader = new Uint8Array([0x80, 0x08]) // LEB128 for 1024
+      const encoded = new Uint8Array(3 + lengthHeader.length + compressed.length)
+      encoded.set([0x52, 0x4a, 0x43], 0)
+      encoded.set(lengthHeader, 3)
+      encoded.set(compressed, 3 + lengthHeader.length)
+
+      const rejection = await decode(encoded, {
+        inflate: unboundedInflate,
+        maxDecompressedSize: cap,
+      }).then(
+        () => null,
+        (err: unknown) => err,
+      )
+      expect(rejection, 'the size cap fired, not the length check').toBeInstanceOf(DASizeLimitError)
     })
 
     it('honours a custom maxDecompressedSize', async () => {
