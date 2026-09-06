@@ -46,9 +46,19 @@ export class NoForkChecker implements Checker {
       }
     }
 
+    /*
+     * `heightsCompared` is reported so a caller can tell "no forks because
+     * consensus agreed" from "no forks because nothing was finalized".
+     *
+     * Both return `passed: true`, and they mean opposite things. When the
+     * round stalls, `blocksByHeight` is empty, the loop above runs zero
+     * times, and safety holds vacuously. A sweep built on this checker was
+     * passing on 5 of 6 seeds that finalized nothing at all.
+     */
     return {
       passed: true,
       message: `No forks detected across ${blocksByHeight.size} height(s) and ${nodes.size} node(s)`,
+      heightsCompared: blocksByHeight.size,
     }
   }
 }

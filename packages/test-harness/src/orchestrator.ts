@@ -45,6 +45,13 @@ export interface CheckResult {
   passed: boolean
   message: string
   details?: string
+  /**
+   * How many distinct heights a checker actually compared, when it makes
+   * sense for that checker. A `passed: true` from zero comparisons means the
+   * property held vacuously, not that it was verified -- see NoForkChecker.
+   */
+  heightsCompared?: number
+
 }
 
 export class TestOrchestrator {
