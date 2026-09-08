@@ -39,12 +39,30 @@ jobs:
         # not exist on the registry until core itself is published. Publishing
         # out of order fails the dependent, or worse, resolves an older core.
         # `raijin-test-harness` is private and npm skips it on its own.
+        #
+        # Guarded per-package: this workflow can run on every workflow_dispatch
+        # regardless of whether any package's version actually changed (e.g. to
+        # verify the token still authenticates), so skip anything whose
+        # name@version is already on the registry instead of letting `npm
+        # publish` fail loudly with "cannot publish over previously published
+        # version" for the common, expected case of nothing new to ship.
         run: |
-          npm publish -w @johnhenry/raijin-core      --access public
-          npm publish -w @johnhenry/raijin-consensus --access public
-          npm publish -w @johnhenry/raijin-mempool   --access public
-          npm publish -w @johnhenry/raijin-da        --access public
-          npm publish -w @johnhenry/raijin-sdk       --access public
-          npm publish -w @johnhenry/raijin-validator --access public
+          publish_if_new() {
+            local workspace="$1" dir="$2"
+            local name version
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "skip: $name@$version already published"
+            else
+              npm publish -w "$workspace" --access public
+            fi
+          }
+          publish_if_new @johnhenry/raijin-core      packages/core
+          publish_if_new @johnhenry/raijin-consensus packages/consensus
+          publish_if_new @johnhenry/raijin-mempool   packages/mempool
+          publish_if_new @johnhenry/raijin-da        packages/da
+          publish_if_new @johnhenry/raijin-sdk       packages/sdk
+          publish_if_new @johnhenry/raijin-validator packages/validator
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
