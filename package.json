@@ -1,7 +1,7 @@
 {
   "name": "raijin",
   "private": true,
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Browser-native mesh rollup framework. Build sovereign rollups where the users ARE the validators.",
   "keywords": [
     "rollup",
