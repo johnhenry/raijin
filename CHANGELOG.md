@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.0.3 (2026-09-08)
+
+**`@johnhenry/raijin-da`**
+
+- **A frame that under-declares its size was accepted and silently
+  truncated.** `decodeFrame` sized the inflate buffer to the declared length
+  and trusted the result. fflate TRUNCATES rather than throwing when output
+  exceeds the buffer, so a frame declaring 1024 bytes while carrying 8 MiB
+  decoded "successfully" and returned the first 1024 bytes as genuine data —
+  a decompression bomb that reads as a valid frame. The buffer is now
+  allocated one byte over the declared size and anything that comes back
+  longer is refused; the extra byte is what makes the overflow detectable at
+  all. Fixed in f729485 (#36); this releases it.
+
+  Note this shipped as `0.0.1` on the registry WITHOUT the fix — the version
+  numbers matched while the code did not, so `npm i @johnhenry/raijin-da`
+  installed the vulnerable decoder. Publishing 0.0.2 is what actually ships
+  it.
+
 ## 0.0.2 (2026-09-06)
 
 **`@johnhenry/raijin-consensus`**
