@@ -1,5 +1,8 @@
 # @johnhenry/raijin-mempool
 
+[![npm version](https://img.shields.io/npm/v/%40johnhenry%2Fraijin-mempool.svg)](https://www.npmjs.com/package/@johnhenry/raijin-mempool)
+[![license](https://img.shields.io/npm/l/%40johnhenry%2Fraijin-mempool.svg)](../../LICENSE)
+
 Transaction mempool with fee-based ordering and eviction for the [Raijin](https://github.com/johnhenry/raijin) mesh rollup — a browser-native rollup framework where the users ARE the validators.
 
 Accepts transactions, verifies signatures through an injected verifier, deduplicates by sender+nonce, orders by fee for block building, evicts the lowest-fee transaction when full, and optionally gossips accepted transactions to peers.

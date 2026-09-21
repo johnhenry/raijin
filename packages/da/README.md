@@ -1,10 +1,23 @@
 # @johnhenry/raijin-da
 
+[![npm version](https://img.shields.io/npm/v/%40johnhenry%2Fraijin-da.svg)](https://www.npmjs.com/package/@johnhenry/raijin-da)
+[![license](https://img.shields.io/npm/l/%40johnhenry%2Fraijin-da.svg)](../../LICENSE)
+
 Data availability abstraction with pluggable backends for the [Raijin](https://github.com/johnhenry/raijin) mesh rollup — a browser-native rollup framework where the users ARE the validators.
 
 One interface, three backends: `LocalDA` (in-memory, for dev/tests), `CelestiaDA` (talks to a Celestia light node's REST API), and `EthBlobDA` (EIP-4844 — currently a documented stub). Plus `encode()`/`decode()` for compressing block data before submission.
 
 `viem` is an optional peer dependency, needed only if you go on to implement the ETH-blobs backend.
+
+## Contents
+
+- [Install](#install)
+- [What a commitment does and does not prove](#what-a-commitment-does-and-does-not-prove)
+- [Quick start](#quick-start)
+- [API](#api)
+- [Wiring DA into a validator](#wiring-da-into-a-validator)
+- [Provenance](#provenance)
+- [License](#license)
 
 ## Install
 

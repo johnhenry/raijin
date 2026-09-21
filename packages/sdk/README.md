@@ -1,5 +1,8 @@
 # @johnhenry/raijin-sdk
 
+[![npm version](https://img.shields.io/npm/v/%40johnhenry%2Fraijin-sdk.svg)](https://www.npmjs.com/package/@johnhenry/raijin-sdk)
+[![license](https://img.shields.io/npm/l/%40johnhenry%2Fraijin-sdk.svg)](../../LICENSE)
+
 Developer-facing client API for the [Raijin](https://github.com/johnhenry/raijin) mesh rollup — submit transactions and query state from a browser-native validator mesh.
 
 Two pieces: `Wallet` (Ed25519 key management + transaction building/signing over Web Crypto) and `RaijinClient` (submit/query/subscribe through an injected `ClientTransport`). The SDK deliberately does not know how bytes reach a validator — you implement `ClientTransport` over HTTP, WebRTC, a Worker port, or an in-process node.

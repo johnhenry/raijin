@@ -1,8 +1,21 @@
 # @johnhenry/raijin-consensus
 
+[![npm version](https://img.shields.io/npm/v/%40johnhenry%2Fraijin-consensus.svg)](https://www.npmjs.com/package/@johnhenry/raijin-consensus)
+[![license](https://img.shields.io/npm/l/%40johnhenry%2Fraijin-consensus.svg)](../../LICENSE)
+
 PBFT consensus and leader rotation for the [Raijin](https://github.com/johnhenry/raijin) mesh rollup — a browser-native rollup framework where the users ARE the validators.
 
 Implements a simplified Practical Byzantine Fault Tolerance protocol: the leader broadcasts PRE-PREPARE with a proposed block, validators answer PREPARE, then COMMIT, and the block finalizes once a quorum of `n - f` commits is collected. View changes rotate the leader when it stops proposing. Every vote is signed and verified against a payload that names the chain, the validator set, the phase, the view and the sequence, so no signature is reusable anywhere else. Transport and timers are injected, so the engine runs over WebRTC, WebSockets, or an in-memory bus, and tests can drive time deterministically.
+
+## Contents
+
+- [Install](#install)
+- [Quorum math — read this before choosing a validator count](#quorum-math-read-this-before-choosing-a-validator-count)
+- [What the engine authenticates, and what is still yours](#what-the-engine-authenticates-and-what-is-still-yours)
+- [Quick start](#quick-start)
+- [API](#api)
+- [Provenance](#provenance)
+- [License](#license)
 
 ## Install
 

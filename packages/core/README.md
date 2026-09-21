@@ -1,8 +1,20 @@
 # @johnhenry/raijin-core
 
+[![npm version](https://img.shields.io/npm/v/%40johnhenry%2Fraijin-core.svg)](https://www.npmjs.com/package/@johnhenry/raijin-core)
+[![license](https://img.shields.io/npm/l/%40johnhenry%2Fraijin-core.svg)](../../LICENSE)
+
 State machine, blocks, and transactions for the [Raijin](https://github.com/johnhenry/raijin) mesh rollup — a browser-native rollup framework where the users ARE the validators.
 
 Zero external dependencies. Uses only `globalThis.crypto.subtle`. Works in the browser and in Node.js. Every other Raijin package depends on this one; if you only need the types, hashing, or the state transition function, this is the only install.
+
+## Contents
+
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Things to know first](#things-to-know-first)
+- [API](#api)
+- [Provenance](#provenance)
+- [License](#license)
 
 ## Install
 

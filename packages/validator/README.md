@@ -1,8 +1,21 @@
 # @johnhenry/raijin-validator
 
+[![npm version](https://img.shields.io/npm/v/%40johnhenry%2Fraijin-validator.svg)](https://www.npmjs.com/package/@johnhenry/raijin-validator)
+[![license](https://img.shields.io/npm/l/%40johnhenry%2Fraijin-validator.svg)](../../LICENSE)
+
 Composition root wiring core, consensus, and mempool into a runnable validator node for the [Raijin](https://github.com/johnhenry/raijin) mesh rollup — a browser-native rollup framework where the users ARE the validators.
 
 `ValidatorNode` assembles a `StateMachine`, a `PBFTConsensus` engine, the fee-ordered `Mempool` from `@johnhenry/raijin-mempool`, and a `BlockProducer`, then runs the loop: accept transactions → (if leader) build a block on the block timer → propose → finalize → apply state → prune mempool. You inject identity (keys + sign/verify), a network transport, a timer, and a state store — the node is transport-, storage-, and identity-agnostic.
+
+## Contents
+
+- [Install](#install)
+- [Traps first](#traps-first)
+- [Quick start — a one-validator chain](#quick-start-a-one-validator-chain)
+- [API](#api)
+- [Running more than one node](#running-more-than-one-node)
+- [Provenance](#provenance)
+- [License](#license)
 
 ## Install
 
