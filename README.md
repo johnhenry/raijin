@@ -1,5 +1,8 @@
 # Raijin
 
+[![CI](https://github.com/johnhenry/raijin/actions/workflows/ci.yml/badge.svg)](https://github.com/johnhenry/raijin/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/%40johnhenry%2Fraijin-core.svg)](LICENSE)
+
 Full documentation: [opensource.johnhenry.me/raijin](https://opensource.johnhenry.me/raijin/)
 
 A browser-native mesh rollup framework. Build sovereign rollups where
@@ -12,6 +15,34 @@ No Go sequencer. No Rust node. No Docker. Users visiting your web app
 form a P2P consensus network and produce blocks together.
 
 Think of it as the OP Stack, but for browsers.
+
+## Contents
+
+- [What is this?](#what-is-this)
+- [Which package do I want?](#which-package-do-i-want)
+- [Packages](#packages)
+- [Quick Start](#quick-start)
+- [Examples](#examples)
+- [Architecture](#architecture)
+- [The test harness (`raijin-test-harness`)](#the-test-harness-raijin-test-harness)
+- [Validator-set size](#validator-set-size)
+- [Security model](#security-model)
+- [Design Principles](#design-principles)
+- [Development](#development)
+- [Name](#name)
+- [License](#license)
+
+## Which package do I want?
+
+| I want to... | Start with |
+|---|---|
+| Run a full rollup node — validate blocks, run consensus, manage a mempool | [`raijin-validator`](packages/validator) — the composition root; wires core + consensus + mempool + da together |
+| Submit transactions or query state from a client app, browser or Node | [`raijin-sdk`](packages/sdk) — `Wallet`, transaction building, the developer-facing API |
+| Implement PBFT consensus directly, without the rest of the stack | [`raijin-consensus`](packages/consensus) — leader rotation, view changes, vote authentication; see its [Security model](packages/consensus/README.md#what-the-engine-authenticates-and-what-is-still-yours) section before choosing a validator count |
+| Only need hashing, the state machine, blocks, or Merkle roots | [`raijin-core`](packages/core) — zero external dependencies; everything else depends on this one |
+| Wire up data availability (Celestia, ETH blobs) | [`raijin-da`](packages/da) — bounded, size-checked decompression on untrusted DA bytes |
+| Manage a fee-ordered transaction pool outside a full validator | [`raijin-mempool`](packages/mempool) |
+| Write multi-node integration tests against a real cluster | [`raijin-test-harness`](packages/test-harness) — internal, unpublished; reaches into `consensus`'s test helpers, so it only works inside this repo |
 
 ## Packages
 
@@ -129,6 +160,78 @@ i.e. **`n >= 4`**:
 
 There is no supported *upper* bound enforced in code; larger `n` has not
 been load-tested here.
+
+## Security model
+
+Raijin's trust boundary is spread across three packages — consensus message
+authentication, data-availability decoding, and SDK key handling — and this
+section is the one place all three are stated together. The full detail on
+consensus authentication lives in
+[`packages/consensus/README.md`](packages/consensus/README.md#what-the-engine-authenticates-and-what-is-still-yours);
+what follows here is the complete guarantee/responsibility split for the
+framework as a whole, not a subset of it.
+
+**What Raijin guarantees:**
+
+- **Every consensus vote is verified before it counts.** PRE-PREPARE,
+  PREPARE, COMMIT and VIEW-CHANGE are checked against the claimed sender
+  through the `verify` (`SignatureVerifier`) you inject; a message that fails
+  is dropped before it reaches any counter. `PBFTConfig.verify` is a required
+  field — there is no unverified mode to fall back into.
+- **Each vote signature is bound to exactly one use.** A vote is signed over
+  `voteDigest({ phase, chainId, epoch, view, sequence, digest })`, so one
+  signature authorizes exactly one phase, of one round, at one sequence, on
+  one chain, under one validator set — a PREPARE cannot double as a COMMIT,
+  and a validator removed from the set (`epoch` changes) stops counting
+  toward future quorums even with an old, still-valid signature.
+- **The quorum is `n - f`, not `2f + 1`.** `2f + 1` degenerates to a
+  single-node quorum at `n = 2` or `n = 3`; `n - f` satisfies the overlap
+  condition `2q - n >= f + 1` at every validator count (see
+  [Validator-set size](#validator-set-size) above). Views only move forward —
+  a replayed VIEW-CHANGE quorum cannot rewind an in-flight round.
+- **Decompressed DA payloads are bounded before they're trusted.**
+  `@johnhenry/raijin-da`'s `decode()` checks the frame's declared
+  decompressed length against `MAX_DECOMPRESSED_SIZE` (16 MiB) before
+  inflating, and the inflate buffer is allocated one byte over that declared
+  size — anything that comes back longer is refused as `DASizeLimitError`
+  rather than silently truncated. DA bytes are untrusted by definition and
+  DEFLATE can reach roughly 1000:1, so an unbounded decoder is a
+  decompression-bomb vector, not a hardening nicety.
+- **SDK-generated keys are non-extractable by default.** `Wallet.generate()`
+  and `Wallet.fromKey()` both default `extractable` to `false`; a caller must
+  explicitly opt in with `{ extractable: true }` to get a key that can leave
+  the browser's key store.
+
+**What is still yours:**
+
+- **Delivery, ordering, and liveness.** The consensus engine never retries,
+  never orders, never detects a dropped message — if your transport loses
+  PREPAREs, rounds simply time out into view changes. Liveness is a
+  transport property; only safety is defended here.
+- **Sybil resistance and the validator membership list itself.** The engine
+  checks that `from` belongs to the `ValidatorSet` you supply and
+  authenticates the signature against it — it has no opinion on who belongs
+  in that set or how it changes, and will faithfully authenticate a vote
+  from a validator you should never have admitted.
+- **Confidentiality and DoS.** Nothing in the consensus layer is encrypted,
+  and signature verification happens per message, so an unauthenticated peer
+  that can reach `onMessage` can still make a node do work. Rate-limit at
+  the transport.
+- **The correctness of every injected dependency.** `verify`
+  (`SignatureVerifier`) is injected into consensus; an implementation that
+  returns `true` unconditionally reinstates every authentication guarantee
+  above. `ed25519Verifier` from `@johnhenry/raijin-core` is the real one —
+  nothing prevents a caller from wiring in something weaker.
+- **The DA backend's own transport security.** `CelestiaDA` refuses to send
+  its auth token over cleartext `http:` to a non-loopback host unless
+  `allowInsecureAuth` is explicitly set; that guard covers the token, not
+  the confidentiality or availability of the DA layer itself, which is the
+  backend's property, not Raijin's.
+- **Genesis and state migration on upgrade.** `0.0.1` was a hard wire-format
+  break with no compatibility mode (see [MIGRATION.md](MIGRATION.md)) — a
+  version that authenticates correctly still will not interoperate with a
+  node on an incompatible wire format, and Raijin does not detect or warn
+  about that mismatch beyond the resulting digest failures.
 
 ## Design Principles
 
