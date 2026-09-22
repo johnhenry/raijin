@@ -55,7 +55,7 @@ jobs:
             if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "skip: $name@$version already published"
             else
-              npm publish -w "$workspace" --access public
+              npm publish -w "$workspace" --access public --provenance
             fi
           }
           publish_if_new @johnhenry/raijin-core      packages/core
