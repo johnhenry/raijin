@@ -16,6 +16,7 @@ import {
   ValidatorSet,
   type NetworkTransport,
   type ConsensusTimer,
+  type ConsensusSyncState,
 } from '@johnhenry/raijin-consensus'
 import { Mempool } from '@johnhenry/raijin-mempool'
 import { BlockProducer } from './block-producer.js'
@@ -42,6 +43,13 @@ export interface ValidatorNodeConfig {
   store: StateStore
   /** Block production interval in ms. Default: 2000. */
   blockTime?: number
+  /**
+   * View-change timeout in ms — how long this node waits for the leader to
+   * propose before requesting a view change. Default: 10000 (PBFTConsensus's
+   * own default). Configurable mainly so tests/demos that exercise view
+   * changes don't have to wait out a real 10s timeout on a mock clock.
+   */
+  viewTimeout?: number
   /** Initial validator public keys (including self). */
   validators?: Uint8Array[]
   /** Maximum transactions per block. Default: 100. */
@@ -50,7 +58,45 @@ export interface ValidatorNodeConfig {
   maxMempoolSize?: number
 }
 
+/**
+ * A `StateStore` that also supports whole-store export/import (see
+ * `InMemoryStateStore.exportData`/`importData`). Not every `StateStore`
+ * backend can reasonably support this (an IndexedDB/OPFS-backed one might
+ * transfer differently) — `ValidatorNode`'s sync API feature-detects for it
+ * at runtime and fails clearly rather than silently skipping state.
+ */
+export interface SyncableStateStore extends StateStore {
+  exportData(): Map<string, Uint8Array>
+  importData(data: Map<string, Uint8Array>): void
+}
+
+function isSyncable(store: StateStore): store is SyncableStateStore {
+  return typeof (store as Partial<SyncableStateStore>).exportData === 'function'
+    && typeof (store as Partial<SyncableStateStore>).importData === 'function'
+}
+
+/**
+ * Everything a rejoining or freshly-restarted `ValidatorNode` needs to catch
+ * up on a currently-running peer: its application state (via
+ * `exportData`/`importData` — see `SyncableStateStore`) and its consensus
+ * view/round state (see `ConsensusSyncState`). See `exportSyncState`/
+ * `importSyncState`/`syncFrom`.
+ */
+export interface ValidatorSyncState {
+  /** Raw state-store key→value data (see `SyncableStateStore.exportData`). */
+  storeData: Map<string, Uint8Array>
+  /**
+   * The most recently finalized block, if any. Lets the rejoining node's
+   * `BlockProducer` resume numbering and parent-hash linkage from the right
+   * place (see `BlockProducer.advance`) instead of from genesis.
+   */
+  latestBlock: Block | null
+  /** Consensus view/round state (see `PBFTConsensus.exportSyncState`). */
+  consensus: ConsensusSyncState
+}
+
 export class ValidatorNode {
+  #store: StateStore
   #stateMachine: StateMachine
   #consensus: PBFTConsensus
   #mempool: Mempool
@@ -71,6 +117,7 @@ export class ValidatorNode {
       timer,
       store,
       blockTime = 2000,
+      viewTimeout,
       validators = [],
       maxTxPerBlock = 100,
       maxMempoolSize = 4096,
@@ -78,6 +125,7 @@ export class ValidatorNode {
 
     this.#blockTime = blockTime
     this.#timer = timer
+    this.#store = store
 
     // Create state machine
     this.#stateMachine = new StateMachine(store, identity.verify)
@@ -104,6 +152,7 @@ export class ValidatorNode {
       timer,
       stateMachine: this.#stateMachine,
       blockTime,
+      viewTimeout,
       sign: identity.sign,
       verify: identity.verify,
     })
@@ -187,6 +236,73 @@ export class ValidatorNode {
   /** The underlying block producer (for advanced use). */
   get blockProducer(): BlockProducer {
     return this.#blockProducer
+  }
+
+  /** The underlying state store (for advanced use — e.g. checking whether
+   *  it's a `SyncableStateStore`). */
+  get store(): StateStore {
+    return this.#store
+  }
+
+  /**
+   * Snapshot everything a rejoining/restarted peer needs to catch up: this
+   * node's application state (requires the store to be a
+   * `SyncableStateStore` — throws otherwise), its last finalized block, and
+   * its consensus view/round state. See `importSyncState`/`syncFrom`.
+   */
+  exportSyncState(): ValidatorSyncState {
+    if (!isSyncable(this.#store)) {
+      throw new Error(
+        'ValidatorNode.exportSyncState: this store does not support exportData()/importData() '
+        + '(see SyncableStateStore) — state sync is unavailable for this backend',
+      )
+    }
+    return {
+      storeData: this.#store.exportData(),
+      latestBlock: this.#latestBlock,
+      consensus: this.#consensus.exportSyncState(),
+    }
+  }
+
+  /**
+   * Adopt a peer's exported state (see `exportSyncState`) after this node
+   * has fallen behind — e.g. it just restarted after a crash, or a
+   * partition it was on the wrong side of just healed. Call `start()`
+   * first (see `PBFTConsensus.importSyncState`).
+   *
+   * Order matters: application state is imported before the consensus
+   * round is adopted, so that if the round includes a PRE-PREPARE whose
+   * digest commits to a stateRoot/receiptRoot, this node's own state is
+   * already positioned to compute the same values were it to finalize the
+   * round itself.
+   */
+  async importSyncState(state: ValidatorSyncState): Promise<void> {
+    if (!isSyncable(this.#store)) {
+      throw new Error(
+        'ValidatorNode.importSyncState: this store does not support exportData()/importData() '
+        + '(see SyncableStateStore) — state sync is unavailable for this backend',
+      )
+    }
+    this.#store.importData(state.storeData)
+
+    if (state.latestBlock) {
+      this.#latestBlock = state.latestBlock
+      await this.#blockProducer.advance(state.latestBlock)
+    }
+
+    await this.#consensus.importSyncState(state.consensus)
+  }
+
+  /**
+   * Convenience: fetch `peer`'s sync state and adopt it in one call. In a
+   * real (non-same-process) deployment, `peer.exportSyncState()` would
+   * instead be requested from the peer over some out-of-band channel (the
+   * `NetworkTransport` used for consensus messages is broadcast/send only,
+   * not request/response) and its result handed to `importSyncState` — the
+   * data shape is what a wire protocol would carry either way.
+   */
+  async syncFrom(peer: ValidatorNode): Promise<void> {
+    await this.importSyncState(peer.exportSyncState())
   }
 
   #scheduleBlockProduction(): void {

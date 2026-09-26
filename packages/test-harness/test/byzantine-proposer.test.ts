@@ -159,14 +159,17 @@ describe('Byzantine proposer: 4-node cluster', () => {
    * a different interleaving per seed, and a failing seed is named in the
    * assertion message so it can be replayed.
    *
-   * SAFETY is asserted per seed. LIVENESS is not, and deliberately so: under
-   * some interleavings this round finalizes nothing at all, because
-   * `PBFTConsensus` discards a PREPARE or COMMIT whose sequence does not
-   * match the one it is currently on (`#handlePrepare`, `#handleCommit`) and
-   * never asks for it again. A vote that overtakes the proposal it refers to
-   * is simply lost, and the round waits for a view-change timeout. That is an
-   * ordinary reordering, not a fault, so it is worth being explicit that the
-   * sweep tolerates a stall and does not tolerate a fork.
+   * SAFETY is asserted per seed. LIVENESS is not pinned to "always", and
+   * deliberately so: `PBFTConsensus` buffers a PREPARE or COMMIT that
+   * arrives ahead of the PRE-PREPARE it depends on (see `#handlePrepare`,
+   * `#handleCommit`, `#replayBuffered`) and replays it once that PRE-PREPARE
+   * lands, so an ordinary cross-link reordering no longer strands a vote —
+   * but a round can still fail to finalize for other reasons under an
+   * adversarial interleaving (e.g. every honest node happens to receive the
+   * liar's message for the *other* group before its own group's messages
+   * arrive). That remains an ordinary stall, not a fault, so it's worth
+   * being explicit that the sweep tolerates a stall and does not tolerate a
+   * fork.
    */
   it('cannot fork the cluster under any of a range of seeded message interleavings', async () => {
     let seedsThatFinalized = 0
@@ -209,28 +212,31 @@ describe('Byzantine proposer: 4-node cluster', () => {
      * evidence if some of it actually reached a decision.
      *
      * The comment here used to say "3 of these 6 seeds finalize and 3 stall",
-     * and left the assertion loose rather than pinned, on the reasoning that
-     * the number is a property of message handling and not a spec. That
-     * reasoning is sound and the looseness still hid a real regression:
-     * measured, ONE seed finalizes, not three. Five stall on the
-     * dropped-out-of-order-vote behaviour, NoForkChecker compares zero
-     * heights for each, and `passed: true` means nothing was verified. A
-     * `> 0` backstop passes at 1 of 6 exactly as it would at 1 of 100, so the
-     * drift from 3 to 1 produced no failure and the file went on documenting
-     * coverage it did not have.
+     * then was corrected to pin ONE seed finalizing, not three: five of the
+     * six were stalling on `PBFTConsensus` dropping a PREPARE or COMMIT that
+     * arrived before the PRE-PREPARE it depended on, rather than buffering
+     * it (see #44 / `#replayBuffered`). NoForkChecker compared zero heights
+     * for each of those five, and `passed: true` meant nothing was verified
+     * for them.
      *
-     * So the count is pinned -- not as a specification, but as a tripwire.
-     * If message handling changes and more seeds reach a decision, that is
-     * good news and this number should be raised deliberately, with the
-     * comment updated to match. What must not happen again is the number
-     * falling silently.
+     * That drop is now a buffer-and-replay (see `#handlePrepare`'s and
+     * `#handleCommit`'s class-level docs), and measured against this exact
+     * sweep, all six seeds now reach a decision instead of one -- the number
+     * moved from 1 to 6 for the reason the original tripwire comment invited:
+     * message handling changed, verifiably for the better, so the pin moves
+     * with it, deliberately, in the same change that fixed the handling.
+     *
+     * So the count stays pinned -- not as a specification, but as a
+     * tripwire. If message handling changes again and the number moves, that
+     * should be a deliberate update with a comment explaining why, same as
+     * this one. What must not happen is the number falling silently.
      */
     expect(
       seedsThatFinalized,
       'seeds reaching a decision changed; this is a property of message handling, ' +
         'not a spec -- update the number and this comment deliberately. ' +
         `Heights compared per seed: ${JSON.stringify([...heightsBySeed])}`,
-    ).toBe(1)
+    ).toBe(6)
 
     // And the sweep must have compared something somewhere, or every safety
     // assertion above held vacuously.

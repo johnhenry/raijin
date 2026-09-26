@@ -26,8 +26,24 @@ import type {
   CommitMessage,
   ViewChangeMessage,
   NewViewMessage,
+  ConsensusSyncState,
 } from './types.js'
 import { PBFTPhase } from './types.js'
+
+/**
+ * How many sequences beyond the one we're currently on a PREPARE/COMMIT may
+ * be buffered for (see `#handlePrepare`/`#handleCommit`'s buffering of
+ * out-of-order messages, and `#replayBuffered`).
+ *
+ * This PBFT variant runs one round at a time — `propose()` throws
+ * "Already in consensus round" if called before the previous one finalizes,
+ * i.e. no pipelining — so a correct peer never legitimately votes more than
+ * one sequence ahead of us. Bounding the lookahead at 1 keeps a Byzantine
+ * validator from parking unboundedly many (view, sequence) buckets in
+ * memory by signing votes for arbitrary far-future sequences; anything
+ * further out is simply not buffered.
+ */
+const MAX_SEQUENCE_LOOKAHEAD = 1n
 
 export interface PBFTConfig {
   /** This node's public key. */
@@ -89,11 +105,49 @@ export class PBFTConsensus {
   #running = false
 
   // ── Message collection ──
-  #prepares = new Map<string, Set<string>>() // digest_hex → set of validator_hex
-  #commits = new Map<string, Set<string>>()  // digest_hex → set of validator_hex
+  // digest_hex → validator_hex → the actual signed message. Keeping the
+  // message (not just a marker that its sender voted) is what lets
+  // `exportSyncState` hand a rejoining peer real, independently-verifiable
+  // votes instead of an assertion that a quorum happened.
+  #prepares = new Map<string, Map<string, PrepareMessage>>()
+  #commits = new Map<string, Map<string, CommitMessage>>()
   #viewChanges = new Map<string, Map<string, ViewChangeMessage>>() // newView → (validator_hex → message), deduped by sender
+  /**
+   * The VIEW-CHANGE quorum that justified the *current* view (empty for
+   * view 0, which needs no justification). `#doViewChange` clears
+   * `#viewChanges` once a view change completes — this is the durable copy
+   * that `exportSyncState` hands to a rejoining/behind peer so it can verify
+   * *why* this is the current view instead of taking our word for it (see
+   * `importSyncState`).
+   */
+  #viewJustification: ViewChangeMessage[] = []
   #pendingBlock: Block | null = null
   #pendingDigest: Uint8Array | null = null
+  /**
+   * The accepted PRE-PREPARE for the round in flight (view, `#sequence`),
+   * or null when idle between rounds. Unlike `#pendingBlock`/`#pendingDigest`
+   * (which exist for local execution), this retains the actual *signed*
+   * message so `exportSyncState` can hand it to a rejoining peer, which
+   * verifies it exactly as if it had arrived over the wire (see
+   * `importSyncState`).
+   */
+  #pendingPrePrepare: PrePrepareMessage | null = null
+  /**
+   * PREPARE/COMMIT messages that arrived for a sequence ahead of
+   * `#sequence` — i.e. before this node had seen (or processed) the
+   * PRE-PREPARE that makes them meaningful. A transport that doesn't
+   * guarantee cross-link ordering (a real network, or an unordered
+   * in-memory pub/sub) can deliver a PREPARE before the PRE-PREPARE it
+   * depends on even though both were sent in the "right" order, and the
+   * naive response — drop it — throws away one of the votes the node needs
+   * to reach quorum, stalling the round into an unnecessary view change.
+   * Buffered here, keyed by "view:sequence", and replayed by
+   * `#replayBuffered` once the matching PRE-PREPARE lands. Bounded by
+   * `MAX_SEQUENCE_LOOKAHEAD`; cleared on view change along with everything
+   * else scoped to the old view.
+   */
+  #pendingPrepares = new Map<string, Map<string, PrepareMessage>>()
+  #pendingCommits = new Map<string, Map<string, CommitMessage>>()
   /**
    * Sequence → digest of the last block that reached a PREPARE quorum
    * ("prepared certificate") at that sequence, across all views. Not
@@ -193,6 +247,7 @@ export class PBFTConsensus {
       from: this.#identity,
       signature: await this.#signVote('pre-prepare', this.#view, this.#sequence, digest),
     }
+    this.#pendingPrePrepare = msg
     this.#transport.broadcast(msg)
 
     // Leader also sends PREPARE so other peers can count it
@@ -206,7 +261,7 @@ export class PBFTConsensus {
       signature: prepareSignature,
     }
     this.#transport.broadcast(prepare)
-    await this.#addPrepare(digest, this.#identity)
+    await this.#addPrepare(prepare)
 
     // Reset view timer (we're making progress)
     this.#resetViewTimer()
@@ -244,6 +299,89 @@ export class PBFTConsensus {
 
   /** Whether the engine is running. */
   get running(): boolean { return this.#running }
+
+  /**
+   * Snapshot enough of this node's view/round state for a rejoining or
+   * behind peer to catch up (see `importSyncState` and the `ConsensusSyncState`
+   * docs). Cheap and side-effect free — safe to call at any time, including
+   * mid-round.
+   */
+  exportSyncState(): ConsensusSyncState {
+    const digestKey = this.#pendingDigest ? toHex(this.#pendingDigest) : null
+    return {
+      view: this.#view,
+      viewChangeJustification: [...this.#viewJustification],
+      sequence: this.#sequence,
+      prePrepare: this.#pendingPrePrepare,
+      prepares: digestKey ? [...(this.#prepares.get(digestKey)?.values() ?? [])] : [],
+      commits: digestKey ? [...(this.#commits.get(digestKey)?.values() ?? [])] : [],
+    }
+  }
+
+  /**
+   * Adopt a peer's view/round state (see `exportSyncState`) after this node
+   * has fallen behind — e.g. it just restarted after a crash or a partition
+   * healed. Call `start()` first: this method replays messages through the
+   * same handlers a live peer's messages go through, and those handlers
+   * require the engine to be running to register on time (view/block
+   * timers, etc.).
+   *
+   * Everything here is re-verified, never trusted on the exporting peer's
+   * say-so:
+   *  - Adopting a *newer* view requires an actual quorum (`n - f`) of
+   *    validly-signed, distinct-sender VIEW-CHANGE messages agreeing on
+   *    that view (skipped only for view 0, which needs no justification) —
+   *    exactly the check `#handleNewView` applies to an unsolicited
+   *    NEW-VIEW, because that is what this is: a NEW-VIEW obtained out of
+   *    band instead of over the wire.
+   *  - The in-flight round (if any) is adopted by replaying its PRE-PREPARE
+   *    and PREPARE/COMMIT votes through `#handlePrePrepare`/`#handlePrepare`/
+   *    `#handleCommit` — the exact authenticated path a live message takes,
+   *    signatures included. A vote that doesn't verify contributes nothing,
+   *    same as it wouldn't from the wire.
+   *
+   * Does not touch application state — pair with the state store's own
+   * `exportData`/`importData` (see `ValidatorNode.importSyncState`) so the
+   * state root the node computes for the next block agrees with its peers.
+   */
+  async importSyncState(state: ConsensusSyncState): Promise<void> {
+    if (state.view > this.#view) {
+      if (state.view > 0n) {
+        const verified = await this.#verifyViewChangeQuorum(state.view, state.viewChangeJustification)
+        if (!verified) {
+          throw new Error(
+            `importSyncState: view-change justification for view ${state.view} does not meet quorum`,
+          )
+        }
+        // Seed `#viewChanges` with the verified quorum so `#doViewChange`
+        // captures it into `#viewJustification` exactly as it would for a
+        // quorum won live through `#handleViewChange`.
+        const map = new Map<string, ViewChangeMessage>()
+        for (const vc of state.viewChangeJustification) {
+          if (vc.newView === state.view) map.set(toHex(vc.from), vc)
+        }
+        this.#viewChanges.set(state.view.toString(), map)
+      }
+      await this.#doViewChange(state.view)
+    }
+
+    // Catch the sequence counter up even when there's no in-flight round to
+    // replay (idle far behind). If a round IS replayed below,
+    // `#handlePrePrepare` overwrites this with the same value anyway.
+    if (state.sequence > this.#sequence) {
+      this.#sequence = state.sequence
+    }
+
+    if (state.prePrepare && state.prePrepare.view === this.#view) {
+      await this.#handlePrePrepare(state.prePrepare.from, state.prePrepare)
+      for (const msg of state.prepares) {
+        await this.#handlePrepare(msg.from, msg)
+      }
+      for (const msg of state.commits) {
+        await this.#handleCommit(msg.from, msg)
+      }
+    }
+  }
 
   // ── Message handlers ────────────────────────────────────────────────
 
@@ -288,6 +426,7 @@ export class PBFTConsensus {
     // Accept the proposal
     this.#pendingBlock = msg.block
     this.#pendingDigest = digest
+    this.#pendingPrePrepare = msg
     this.#sequence = msg.sequence
     this.#phase = PBFTPhase.PrePrepared
 
@@ -302,27 +441,47 @@ export class PBFTConsensus {
       signature,
     }
     this.#transport.broadcast(prepare)
-    await this.#addPrepare(digest, this.#identity)
+    await this.#addPrepare(prepare)
+
+    // Now that we know (view, sequence), replay any PREPARE/COMMIT that
+    // arrived for it before we did — see `#pendingPrepares`/`#pendingCommits`.
+    await this.#replayBuffered(msg.view, msg.sequence)
 
     this.#resetViewTimer()
   }
 
   async #handlePrepare(from: Uint8Array, msg: PrepareMessage): Promise<void> {
     if (msg.view !== this.#view) return
-    if (msg.sequence !== this.#sequence) return
+    // A correct peer votes at most one sequence ahead of us under this
+    // (unpipelined) protocol; anything further is not worth buffering.
+    if (msg.sequence < this.#sequence || msg.sequence > this.#sequence + MAX_SEQUENCE_LOOKAHEAD) return
 
     if (!(await this.#verifyVote('prepare', msg.view, msg.sequence, msg.digest, msg.signature, from))) return
 
-    await this.#addPrepare(msg.digest, from)
+    if (msg.sequence === this.#sequence) {
+      await this.#addPrepare(msg)
+      return
+    }
+
+    // Ahead of us: we haven't seen this round's PRE-PREPARE yet (it may
+    // simply not have arrived — see the class-level note on buffering).
+    // Hold it; `#handlePrePrepare` replays it once the PRE-PREPARE for
+    // (msg.view, msg.sequence) is accepted.
+    this.#bufferVote(this.#pendingPrepares, msg.view, msg.sequence, from, msg)
   }
 
   async #handleCommit(from: Uint8Array, msg: CommitMessage): Promise<void> {
     if (msg.view !== this.#view) return
-    if (msg.sequence !== this.#sequence) return
+    if (msg.sequence < this.#sequence || msg.sequence > this.#sequence + MAX_SEQUENCE_LOOKAHEAD) return
 
     if (!(await this.#verifyVote('commit', msg.view, msg.sequence, msg.digest, msg.signature, from))) return
 
-    await this.#addCommit(msg.digest, from)
+    if (msg.sequence === this.#sequence) {
+      await this.#addCommit(msg)
+      return
+    }
+
+    this.#bufferVote(this.#pendingCommits, msg.view, msg.sequence, from, msg)
   }
 
   async #handleViewChange(from: Uint8Array, msg: ViewChangeMessage): Promise<void> {
@@ -363,10 +522,24 @@ export class PBFTConsensus {
     // one message carrying a recorded quorum.
     if (msg.view <= this.#view) return
 
+    if (!(await this.#verifyViewChangeQuorum(msg.view, msg.viewChanges))) return
+
+    await this.#doViewChange(msg.view)
+  }
+
+  /**
+   * Whether `viewChanges` contains a real quorum (`n - f`) of validly-signed,
+   * distinct-sender VIEW-CHANGE messages all naming `view`. Shared by
+   * `#handleNewView` (an unsolicited NEW-VIEW arriving over the wire) and
+   * `importSyncState` (a NEW-VIEW-shaped claim arriving out of band from a
+   * sync peer) — both are "someone claims this view is justified", and
+   * neither may be believed without doing this check.
+   */
+  async #verifyViewChangeQuorum(view: bigint, viewChanges: ViewChangeMessage[]): Promise<boolean> {
     const seenSenders = new Set<string>()
 
-    for (const vc of msg.viewChanges) {
-      if (vc.newView !== msg.view) continue
+    for (const vc of viewChanges) {
+      if (vc.newView !== view) continue
       if (!this.#validators.has(vc.from)) continue
 
       const hex = toHex(vc.from)
@@ -377,23 +550,23 @@ export class PBFTConsensus {
       seenSenders.add(hex)
     }
 
-    if (seenSenders.size < this.#validators.quorumSize()) return
-
-    await this.#doViewChange(msg.view)
+    return seenSenders.size >= this.#validators.quorumSize()
   }
 
   // ── Prepare/Commit collection ───────────────────────────────────────
 
-  async #addPrepare(digest: Uint8Array, from: Uint8Array): Promise<void> {
-    const key = toHex(digest)
+  async #addPrepare(msg: PrepareMessage): Promise<void> {
+    const key = toHex(msg.digest)
     if (!this.#prepares.has(key)) {
-      this.#prepares.set(key, new Set())
+      this.#prepares.set(key, new Map())
     }
-    this.#prepares.get(key)!.add(toHex(from))
+    // Dedup by sender: keyed by validator hex, so a resend or a buffered
+    // replay of the same vote never counts twice toward quorum.
+    this.#prepares.get(key)!.set(toHex(msg.from), msg)
 
     // Check quorum
     if (this.#prepares.get(key)!.size >= this.#validators.quorumSize()) {
-      await this.#onPrepared(digest)
+      await this.#onPrepared(msg.digest)
     }
   }
 
@@ -424,19 +597,19 @@ export class PBFTConsensus {
       signature,
     }
     this.#transport.broadcast(commit)
-    await this.#addCommit(digest, this.#identity)
+    await this.#addCommit(commit)
   }
 
-  async #addCommit(digest: Uint8Array, from: Uint8Array): Promise<void> {
-    const key = toHex(digest)
+  async #addCommit(msg: CommitMessage): Promise<void> {
+    const key = toHex(msg.digest)
     if (!this.#commits.has(key)) {
-      this.#commits.set(key, new Set())
+      this.#commits.set(key, new Map())
     }
-    this.#commits.get(key)!.add(toHex(from))
+    this.#commits.get(key)!.set(toHex(msg.from), msg)
 
     // Check quorum
     if (this.#commits.get(key)!.size >= this.#validators.quorumSize()) {
-      await this.#onCommitted(digest)
+      await this.#onCommitted(msg.digest)
     }
   }
 
@@ -473,6 +646,7 @@ export class PBFTConsensus {
     this.#phase = PBFTPhase.Idle
     this.#pendingBlock = null
     this.#pendingDigest = null
+    this.#pendingPrePrepare = null
     this.#prepares.clear()
     this.#commits.clear()
     // This sequence is finalized — no future view change can conflict with
@@ -528,13 +702,30 @@ export class PBFTConsensus {
    */
   async #doViewChange(newView: bigint): Promise<void> {
     if (newView <= this.#view) return
+
+    // Capture the quorum that justifies `newView` before `#viewChanges` is
+    // cleared below — this is the durable copy `exportSyncState` hands to a
+    // rejoining/behind peer (see `#viewJustification`'s docs). Populated
+    // either by a quorum won live through `#handleViewChange`, or (for
+    // `importSyncState`) by the externally-supplied quorum it seeds into
+    // `#viewChanges` after independently verifying it — both are real,
+    // verified quorums by the time they reach here.
+    const justifying = this.#viewChanges.get(newView.toString())
+    this.#viewJustification = justifying ? [...justifying.values()] : []
+
     this.#view = newView
     this.#phase = PBFTPhase.Idle
     this.#pendingBlock = null
     this.#pendingDigest = null
+    this.#pendingPrePrepare = null
     this.#prepares.clear()
     this.#commits.clear()
     this.#viewChanges.clear()
+    // Buffered votes were all scoped to `msg.view === <old #view>` when
+    // buffered (see `#handlePrepare`/`#handleCommit`), so none of them can
+    // ever be replayed once the view has moved on.
+    this.#pendingPrepares.clear()
+    this.#pendingCommits.clear()
 
     for (const handler of this.#onViewChange) {
       handler(newView)
@@ -576,6 +767,7 @@ export class PBFTConsensus {
       from: this.#identity,
       signature: await this.#signVote('pre-prepare', this.#view, this.#sequence, digest),
     }
+    this.#pendingPrePrepare = msg
     this.#transport.broadcast(msg)
 
     const prepareSignature = await this.#signVote('prepare', this.#view, this.#sequence, digest)
@@ -588,7 +780,10 @@ export class PBFTConsensus {
       signature: prepareSignature,
     }
     this.#transport.broadcast(prepare)
-    await this.#addPrepare(digest, this.#identity)
+    await this.#addPrepare(prepare)
+    // No buffered-message replay here: `#doViewChange` (the only caller)
+    // clears `#pendingPrepares`/`#pendingCommits` for the old view before
+    // this runs, and nothing can have been buffered for the new view yet.
   }
 
   // ── Timers ──────────────────────────────────────────────────────────
@@ -611,6 +806,61 @@ export class PBFTConsensus {
 
   #resetViewTimer(): void {
     this.#startViewTimer()
+  }
+
+  // ── Out-of-order PREPARE/COMMIT buffering ──────────────────────────
+
+  /** The key `#pendingPrepares`/`#pendingCommits` are bucketed by. */
+  #bufferKey(view: bigint, sequence: bigint): string {
+    return `${view.toString()}:${sequence.toString()}`
+  }
+
+  /** Buffer one authenticated, out-of-order PREPARE or COMMIT, deduped by
+   *  sender (same rule as the live `#prepares`/`#commits` maps: a resend
+   *  must not occupy two slots or count twice once replayed). */
+  #bufferVote<M extends PrepareMessage | CommitMessage>(
+    buffer: Map<string, Map<string, M>>,
+    view: bigint,
+    sequence: bigint,
+    from: Uint8Array,
+    msg: M,
+  ): void {
+    const key = this.#bufferKey(view, sequence)
+    if (!buffer.has(key)) buffer.set(key, new Map())
+    buffer.get(key)!.set(toHex(from), msg)
+  }
+
+  /**
+   * Replay PREPARE/COMMIT messages that arrived for (view, sequence) before
+   * this node had accepted the PRE-PREPARE that makes them meaningful (see
+   * `#handlePrepare`/`#handleCommit`). Called from `#handlePrePrepare` right
+   * after the PRE-PREPARE is accepted.
+   *
+   * Prepares are replayed before commits: a commit only means anything once
+   * we've counted enough prepares to reach `Prepared` ourselves (see
+   * `#onCommitted`'s phase guard), so replaying commits first would let an
+   * already-complete commit quorum arrive while we're still `PrePrepared`
+   * and be silently dropped by that guard, with nothing left to re-trigger
+   * it once we do reach `Prepared`.
+   */
+  async #replayBuffered(view: bigint, sequence: bigint): Promise<void> {
+    const key = this.#bufferKey(view, sequence)
+
+    const prepares = this.#pendingPrepares.get(key)
+    this.#pendingPrepares.delete(key)
+    if (prepares) {
+      for (const msg of prepares.values()) {
+        await this.#addPrepare(msg)
+      }
+    }
+
+    const commits = this.#pendingCommits.get(key)
+    this.#pendingCommits.delete(key)
+    if (commits) {
+      for (const msg of commits.values()) {
+        await this.#addCommit(msg)
+      }
+    }
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────

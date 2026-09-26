@@ -1,6 +1,6 @@
 {
   "name": "@johnhenry/raijin-consensus",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "PBFT consensus and leader rotation for the Raijin mesh rollup",
   "repository": {
     "type": "git",

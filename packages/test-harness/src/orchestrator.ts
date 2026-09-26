@@ -72,6 +72,9 @@ export class TestOrchestrator {
   #built = false
   #nonces = new Map<string, bigint>()  // hex(from) → next nonce
   #seed: number | null = null
+  /** Per-node view-change timeout override (see `addNode`'s `viewTimeout`
+   *  option), applied both at `startAll()` and on any later restart. */
+  #viewTimeouts = new Map<string, number>()
 
   constructor(opts?: { seed?: number }) {
     this.network = new PartitionableNetwork()
@@ -95,14 +98,20 @@ export class TestOrchestrator {
   /**
    * Register a node ID. The actual RaijinTestNode is not constructed until
    * startAll() is called, so that every node sees the full validator set.
+   *
+   * `opts.viewTimeout` overrides this node's view-change timeout (see
+   * `RaijinTestNodeConfig.viewTimeout`) — useful for tests that need to
+   * exercise a view change without advancing the mock clock past the
+   * default 10s.
    */
-  addNode(id: string): void {
+  addNode(id: string, opts?: { viewTimeout?: number }): void {
     if (this.#built) throw new Error('Cannot add nodes after startAll()')
     const index = this.#nextIndex++
     const key = makeTestKey(index)
     this.#validators.push(key)
     this.#nodeKeys.set(id, key)
     this.#pendingNodes.push(id)
+    if (opts?.viewTimeout !== undefined) this.#viewTimeouts.set(id, opts.viewTimeout)
     this.events.record(id, 'lifecycle', 'node-registered', { index })
   }
 
@@ -146,6 +155,7 @@ export class TestOrchestrator {
           timer: this.timer,
           validators: validatorsCopy,
           blockTime: 2000,
+          viewTimeout: this.#viewTimeouts.get(id),
         })
         this.nodes.set(id, node)
         this.events.record(id, 'lifecycle', 'node-added', {})
@@ -236,6 +246,7 @@ export class TestOrchestrator {
       timer: this.timer,
       validators: [...this.#validators],
       blockTime: 2000,
+      viewTimeout: this.#viewTimeouts.get(id),
     })
 
     const peer = [...this.nodes.values()].find((n) => n.running)
@@ -246,6 +257,50 @@ export class TestOrchestrator {
     this.nodes.set(id, newNode)
     newNode.start()
     this.events.record(id, 'lifecycle', 'node-restarted', {})
+  }
+
+  /**
+   * Restart a crashed node and catch it up through the REAL sync/catch-up
+   * API (`RaijinTestNode.syncFrom` → `ValidatorNode.syncFrom` →
+   * `PBFTConsensus.importSyncState` + state-store `exportData`/
+   * `importData`) rather than `restartNode`'s direct store-copy stand-in.
+   *
+   * Exercises exactly what a rejoining validator now has available: the
+   * peer's latest finalized height + state, its current view together with
+   * the VIEW-CHANGE quorum that justifies it, and any round already in
+   * flight (so the rejoined node can participate in it rather than only
+   * being able to join at the next one) — see the `ConsensusSyncState` docs
+   * in @johnhenry/raijin-consensus.
+   *
+   * Requires a currently-running peer to sync from.
+   */
+  async restartNodeViaSync(id: string): Promise<void> {
+    const key = this.#nodeKeys.get(id)
+    if (!key) throw new Error(`Unknown node: ${id}`)
+
+    const peer = [...this.nodes.values()].find((n) => n.running && n.id !== id)
+    if (!peer) throw new Error(`restartNodeViaSync(${id}): no running peer to sync from`)
+
+    const transport = this.network.reconnect(key)
+    const newNode = new RaijinTestNode({
+      id,
+      publicKey: key,
+      sign: mockSign(key),
+      verify: mockVerifier,
+      transport,
+      timer: this.timer,
+      validators: [...this.#validators],
+      blockTime: 2000,
+      viewTimeout: this.#viewTimeouts.get(id),
+    })
+
+    this.nodes.set(id, newNode)
+    // `importSyncState` replays messages through the live-message handlers,
+    // which require the engine to be running (see its docs) — start it
+    // before syncing, the same order a real rejoining node would use.
+    newNode.start()
+    await newNode.syncFrom(peer)
+    this.events.record(id, 'lifecycle', 'node-restarted-via-sync', {})
   }
 
   /** Drain all pending messages in the network. */

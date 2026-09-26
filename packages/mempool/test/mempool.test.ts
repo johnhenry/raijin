@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import type { Transaction } from '@johnhenry/raijin-core'
+import type { Block, Transaction } from '@johnhenry/raijin-core'
+import { InMemoryStateStore, StateMachine } from '@johnhenry/raijin-core'
 import { Mempool } from '../src/mempool.js'
 import { orderByFee, defaultFeeExtractor } from '../src/ordering.js'
 import type { GossipTransport, TransactionVerifier } from '../src/types.js'
@@ -165,6 +166,76 @@ describe('Mempool', () => {
       expect(tx.data[0]).toBe(TRANSFER_TYPE)
       // ...and the fee extractor still reads the correct fee.
       expect(defaultFeeExtractor(tx)).toBe(fee)
+    })
+
+    it('keeps a sender\'s own transactions in nonce order even when a higher-nonce tx outbids a lower one', () => {
+      // Sender 1 has nonce 0 pending at a low fee, and then submits nonce 1
+      // at a much higher fee (wanting THAT transfer prioritized). A flat fee
+      // sort would place sender 1's nonce-1 tx (fee 1000) ahead of its own
+      // nonce-0 tx (fee 1) -- but the state machine can never actually
+      // execute nonce 1 before nonce 0, so that ordering is not just
+      // suboptimal, it's unexecutable (see the end-to-end test below).
+      const s1n0 = makeTx({ sender: 1, nonce: 0n, fee: 1n })
+      const s1n1 = makeTx({ sender: 1, nonce: 1n, fee: 1000n })
+      const s2n0 = makeTx({ sender: 2, nonce: 0n, fee: 500n })
+
+      const ordered = orderByFee([s1n0, s1n1, s2n0], defaultFeeExtractor)
+
+      // Sender 1's HEAD (nonce 0, fee 1) competes on fee against sender 2's
+      // head and loses -- but sender 1's nonce-1 tx never jumps ahead of its
+      // own nonce-0 tx despite its huge fee advantage.
+      expect(ordered).toEqual([s2n0, s1n0, s1n1])
+    })
+
+    it('tie-breaks by nonce ascending across senders\' heads, same as before', () => {
+      // Same case the old flat-sort tie-break covered: two senders, one tx
+      // each, equal fee. Still true when heads (not a flat list) are what's
+      // being compared.
+      const tx1 = makeTx({ sender: 1, nonce: 5n, fee: 100n })
+      const tx2 = makeTx({ sender: 2, nonce: 1n, fee: 100n })
+      const sorted = orderByFee([tx1, tx2], defaultFeeExtractor)
+      expect(sorted[0].nonce).toBe(1n)
+      expect(sorted[1].nonce).toBe(5n)
+    })
+
+    it('end-to-end: a sender outbidding their own pending tx no longer causes a nonce-mismatch revert', async () => {
+      // Reproduces the bug report shape directly against the state machine:
+      // two DIFFERENT transactions from one sender (nonce 0 and nonce 1 --
+      // not a same-nonce replace, which the mempool already rejects as a
+      // duplicate), where the later one bids far more. Before the fix,
+      // pendingForProposer() could hand a block builder nonce 1 ahead of
+      // nonce 0, and applying that block reverted nonce 1 with "nonce
+      // mismatch: expected 0, got 1" even though both transactions were
+      // individually valid.
+      const pool = new Mempool({ verifier: validVerifier })
+      const low = makeTx({ sender: 7, nonce: 0n, fee: 1n })
+      const high = makeTx({ sender: 7, nonce: 1n, fee: 1000n })
+
+      expect(await pool.submit(low)).toBe(true)
+      expect(await pool.submit(high)).toBe(true)
+      expect(pool.size).toBe(2)
+
+      const block: Block = {
+        header: {
+          number: 1n,
+          parentHash: new Uint8Array(32),
+          stateRoot: new Uint8Array(32),
+          txRoot: new Uint8Array(32),
+          receiptRoot: new Uint8Array(32),
+          timestamp: Date.now(),
+          proposer: new Uint8Array(32),
+        },
+        transactions: pool.pendingForProposer(),
+        signatures: [],
+      }
+
+      const store = new InMemoryStateStore()
+      const sm = new StateMachine(store, { verify: async () => true })
+      const receipts = await sm.applyBlock(block)
+
+      expect(receipts).toHaveLength(2)
+      expect(receipts.every((r) => r.status === 'success')).toBe(true)
+      expect(receipts.some((r) => r.revertReason?.includes('nonce mismatch'))).toBe(false)
     })
   })
 
