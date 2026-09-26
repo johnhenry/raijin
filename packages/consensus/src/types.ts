@@ -100,6 +100,49 @@ export interface NewViewMessage {
   viewChanges: ViewChangeMessage[]
 }
 
+// ── Sync / catch-up ────────────────────────────────────────────────────
+
+/**
+ * Everything a rejoining or freshly-restarted node needs to catch up on the
+ * consensus view/round it missed, taken from a currently-running peer (see
+ * `PBFTConsensus.exportSyncState`/`importSyncState`).
+ *
+ * Deliberately holds *messages*, not conclusions: `viewChangeJustification`
+ * is the actual signed VIEW-CHANGE quorum, not just "trust me, it's view 5",
+ * and `prePrepare`/`prepares`/`commits` are the actual signed votes for the
+ * round in flight, not a summary of them. `importSyncState` re-verifies
+ * every signature in here exactly as if each had arrived over the wire —
+ * catching up is not a reason to trust a peer any more than a live message
+ * from it would be.
+ */
+export interface ConsensusSyncState {
+  /** The view this snapshot was taken in. */
+  view: bigint
+  /**
+   * The signed VIEW-CHANGE quorum that justifies `view` being the current
+   * view. Empty for view 0 (the genesis view needs no justification —
+   * every node starts there).
+   */
+  viewChangeJustification: ViewChangeMessage[]
+  /**
+   * The sequence number of the round in flight, if `prePrepare` is set;
+   * otherwise the exporting node's last *finalized* sequence (i.e. it was
+   * idle between rounds when the snapshot was taken).
+   */
+  sequence: bigint
+  /**
+   * The accepted PRE-PREPARE for `sequence` in `view`, if the exporting
+   * node has seen one and the round hasn't finalized yet. Lets the
+   * rejoining node participate in the round already underway instead of
+   * only being able to join at the next one. Null when idle between rounds.
+   */
+  prePrepare: PrePrepareMessage | null
+  /** Every signed PREPARE the exporting node holds for `prePrepare`'s digest. */
+  prepares: PrepareMessage[]
+  /** Every signed COMMIT the exporting node holds for `prePrepare`'s digest. */
+  commits: CommitMessage[]
+}
+
 // ── PBFT phase ────────────────────────────────────────────────────────
 
 export enum PBFTPhase {

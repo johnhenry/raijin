@@ -7,7 +7,7 @@
  */
 
 export { ValidatorNode } from './validator.js'
-export type { ValidatorNodeConfig } from './validator.js'
+export type { ValidatorNodeConfig, SyncableStateStore, ValidatorSyncState } from './validator.js'
 
 export { BlockProducer } from './block-producer.js'
 export type { BlockProducerConfig } from './block-producer.js'

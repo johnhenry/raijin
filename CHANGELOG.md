@@ -1,5 +1,104 @@
 # Changelog
 
+## 0.0.4 (2026-09-26)
+
+Two real protocol-correctness bugs, found while wiring Raijin into ORRERY (a
+showcase running 4–7 live in-browser validators): a round that could stall
+for no reason under ordinary network reordering, and no way for a validator
+to come back after a crash or partition. Neither is a packaging issue — both
+are PBFT behaving wrong.
+
+**`@johnhenry/raijin-consensus`** `0.0.2` → `0.0.3`
+
+- **Issue #44 — a PREPARE arriving before its PRE-PREPARE was dropped,
+  stalling a round even with no fault present.** `#handlePrepare`/
+  `#handleCommit` discarded any vote whose sequence didn't exactly match the
+  node's current one — including a PREPARE for the round *about* to start,
+  which a transport without cross-link delivery guarantees (a real network,
+  or an in-memory pub/sub without ordering) can and does deliver ahead of
+  the PRE-PREPARE it depends on. At `n = 4`, `f = 1` (quorum `2f+1 = 3`),
+  losing that vote at even one node stalls the WHOLE round — that node can
+  never contribute the PREPARE/COMMIT its peers need — and the cluster pays
+  for it with an unnecessary view change, even though 3 honest validators
+  were present and PBFT-safe the entire time. Out-of-order PREPARE/COMMIT
+  are now buffered, keyed by `(view, sequence)`, bounded to one sequence of
+  lookahead (this PBFT variant doesn't pipeline rounds, so a correct peer
+  never legitimately votes further ahead than that), and replayed the
+  moment the matching PRE-PREPARE is accepted. See
+  `packages/test-harness/test/out-of-order-prepare.test.ts` (a 4-validator
+  cluster, one down, with a deliberately delayed link reproducing the
+  ordering) and `packages/test-harness/test/byzantine-proposer.test.ts`'s
+  seeded-interleaving sweep, which went from 1-of-6 seeds reaching a
+  decision to 6-of-6 under this exact fix.
+
+- **Issue #45 — no catch-up/state-sync path for a validator that rejoins
+  after a crash or partition.** A restarted node had no way to learn the
+  current view, no way to verify *why* that's the current view rather than
+  trusting a peer's say-so, and no way to pick up a round already in
+  flight — it stayed silently behind (or, before an earlier fix, could have
+  diverged) until something external repaired it. Added
+  `PBFTConsensus.exportSyncState()`/`importSyncState()`: the exported state
+  carries the current view together with its justifying VIEW-CHANGE quorum
+  (verified independently on import — `n - f` distinct, validly-signed
+  VIEW-CHANGE messages agreeing on the claimed view, the same check
+  `#handleNewView` already applied to an unsolicited NEW-VIEW), plus the
+  round in flight's actual PRE-PREPARE and collected PREPARE/COMMIT votes,
+  which are replayed through the exact same authenticated handlers a live
+  message goes through — nothing is trusted on the exporting peer's word.
+  `ValidatorNode.exportSyncState()`/`importSyncState()`/`syncFrom()` pair
+  this with the state store's own `exportData()`/`importData()` (already
+  present on `InMemoryStateStore`, now reused rather than duplicated via
+  the new `SyncableStateStore` interface) so application state and
+  consensus state travel together. See
+  `packages/consensus/test/sync.test.ts` (consensus-level, full control
+  over message delivery) and
+  `packages/test-harness/test/validator-catch-up.test.ts` (a validator
+  crashed mid-round, restarted via the real API, ends up at the correct
+  height and view, and finalizes the next block alongside a peer that never
+  went down, matching state roots).
+
+  Two smaller items from the same issue, fixed alongside it:
+  - `ValidatorNode` didn't allow configuring the view-change timeout
+    (hardcoded to `PBFTConsensus`'s ~10s default). `ValidatorNodeConfig`
+    gains `viewTimeout`, threaded straight through — useful for tests/demos
+    that shouldn't have to wait out a real 10s timer. See
+    `packages/test-harness/test/view-timeout-config.test.ts`.
+  - The mempool ordered pending transactions by fee *across every pending
+    transaction regardless of sender/nonce*. A sender with nonce 0 pending
+    at a low fee who then submitted nonce 1 at a much higher fee (wanting
+    that transfer prioritized — a legitimately different transaction, not a
+    same-nonce replace, which is still correctly rejected as a duplicate)
+    could see nonce 1 ordered ahead of nonce 0; the state machine can never
+    execute a nonce out of sequence, so it reverted with "nonce mismatch"
+    instead of the higher-fee transaction ever actually gaining priority.
+    `orderByFee` (`@johnhenry/raijin-mempool`, `0.0.1` → `0.0.2`) now merges
+    each sender's nonce-ordered queue by the fee of its *head* (lowest
+    pending nonce) — senders compete on fee, but a sender's own
+    transactions never reorder relative to each other. See
+    `packages/mempool/test/mempool.test.ts`'s
+    "outbidding a pending tx" tests, including an end-to-end run through
+    `StateMachine.applyBlock` reproducing the revert before the fix and its
+    absence after.
+
+**`@johnhenry/raijin-validator`** `0.0.2` → `0.0.3`
+
+- `ValidatorNodeConfig.viewTimeout` and the sync API described above.
+  Dependency ranges bumped to pull in the fixed
+  `@johnhenry/raijin-consensus@^0.0.3` and `@johnhenry/raijin-mempool@^0.0.2`.
+
+**`@johnhenry/raijin-mempool`** `0.0.1` → `0.0.2`
+
+- The head-of-queue fee ordering fix described above.
+
+**`raijin-test-harness`** (internal, unpublished)
+
+- `TestOrchestrator.addNode(id, { viewTimeout })` and a new
+  `restartNodeViaSync(id)` that catches a restarted node up through the
+  real `ValidatorNode.syncFrom` API instead of `restartNode`'s direct
+  store-copy stand-in (kept, unchanged, for tests that don't need the real
+  protocol). `PartitionableNetwork`'s existing delay/reordering primitives
+  were sufficient to reproduce issue #44 without any harness changes.
+
 ## 0.0.3 (2026-09-08)
 
 **`@johnhenry/raijin-da`**

@@ -35,6 +35,11 @@ export interface RaijinTestNodeConfig {
   validators: Uint8Array[]
   /** Block time in ms. Default: 2000. */
   blockTime?: number
+  /** View-change timeout in ms (see `ValidatorNodeConfig.viewTimeout`).
+   *  Default: PBFTConsensus's own default (10000). Mainly useful for tests
+   *  that need to exercise a view change without waiting out a real 10s
+   *  timeout on the mock clock. */
+  viewTimeout?: number
 }
 
 export class RaijinTestNode {
@@ -63,6 +68,7 @@ export class RaijinTestNode {
       store: this.store,
       validators: config.validators,
       blockTime: config.blockTime ?? 2000,
+      viewTimeout: config.viewTimeout,
     })
 
     this.node.onBlockFinalized((block) => {
@@ -147,6 +153,19 @@ export class RaijinTestNode {
    */
   async proposeBlock(): Promise<Block | null> {
     return this.node.blockProducer.produceBlock()
+  }
+
+  /**
+   * Catch this (presumably just-restarted) node up on a running peer's
+   * application state AND consensus view/round state, via the real
+   * `ValidatorNode.syncFrom` protocol (state store `exportData`/
+   * `importData`, plus the verified view/round catch-up — see
+   * `PBFTConsensus.importSyncState`). Unlike `TestOrchestrator.restartNode`
+   * (which seeds a fresh node's store directly as a stand-in), this
+   * exercises the actual sync API a rejoining validator would use.
+   */
+  async syncFrom(peer: RaijinTestNode): Promise<void> {
+    await this.node.syncFrom(peer.node)
   }
 
   /**

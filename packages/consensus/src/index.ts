@@ -22,6 +22,7 @@ export type {
   CommitMessage,
   ViewChangeMessage,
   NewViewMessage,
+  ConsensusSyncState,
 } from './types.js'
 
 export { PBFTPhase } from './types.js'
