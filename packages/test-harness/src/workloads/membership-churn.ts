@@ -63,7 +63,7 @@ export class MembershipChurnWorkload implements Workload {
           // (balances, nonces, everything) from a live peer before it
           // rejoins consensus — no manual re-funding needed here anymore.
           // (Manually re-funding on top of that would double-count balances.)
-          orch.restartNode(ev.nodeId)
+          await orch.restartNode(ev.nodeId)
         }
         eventIdx++
       }

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 
-import { StateMachine, InMemoryStateStore, hash, encodeBlockHeader, type Block } from '@johnhenry/raijin-core'
+import { StateMachine, InMemoryStateStore, hash, encodeBlockHeader, blockHash, type Block } from '@johnhenry/raijin-core'
 import { PBFTConsensus, ValidatorSet, PBFTPhase, voteDigest, NO_BLOCK_DIGEST } from '../src/index.js'
 import type { NewViewMessage, PrePrepareMessage, ViewChangeMessage } from '../src/types.js'
 import { MockNetwork, DeterministicNetwork, MockTimer, mockVerifier, mockSign, makeTestKey } from './helpers.js'
@@ -848,6 +848,107 @@ describe('PBFTConsensus', () => {
       expect(p2.consensus.currentView).toBe(4n)
 
       p2.consensus.stop()
+    })
+  })
+
+  // `#onCommitted`'s number/parent-hash guard, independent of the
+  // early-PRE-PREPARE buffering fix above (issue #47): even if a block
+  // reaches quorum, `applyBlock` must not run unless it's the immediate
+  // successor of what this node last finalized, on the right parent.
+  describe('applyBlock guard: block number and parent-hash linkage (issue #47)', () => {
+    /**
+     * A single-validator cluster (quorum = 1) isolates this check from the
+     * ordering fix: with one validator, quorum is reached from its own vote
+     * alone, so `propose()` resolves only once the entire round --
+     * including `applyBlock` -- has actually run, making the guard directly
+     * observable as a rejection from `propose()` itself.
+     */
+    function createSoloPeer(key: Uint8Array): { consensus: PBFTConsensus } {
+      const soloNetwork = new DeterministicNetwork()
+      const soloValidators = new ValidatorSet([key])
+      const store = new InMemoryStateStore()
+      const sm = new StateMachine(store, mockVerifier)
+      const timer = new MockTimer()
+      const transport = soloNetwork.createTransport(key)
+      const consensus = new PBFTConsensus({
+        identity: key,
+        chainId: TEST_CHAIN_ID,
+        validators: soloValidators,
+        transport,
+        timer,
+        stateMachine: sm,
+        sign: mockSign(key),
+        verify: mockVerifier,
+        blockTime: 100,
+        viewTimeout: 500,
+      })
+      return { consensus }
+    }
+
+    it('refuses to apply a block whose number is not lastFinalized + 1', async () => {
+      const { consensus } = createSoloPeer(key1)
+      consensus.start()
+
+      const finalized: Block[] = []
+      consensus.onBlockFinalized((block) => finalized.push(block))
+
+      await consensus.propose(makeBlock(1n, key1))
+      expect(finalized).toHaveLength(1)
+
+      // Correct parent, but the wrong number (should be 2n) -- a leader
+      // that skipped a sequence, or one whose own bookkeeping diverged from
+      // reality. The consensus round itself has no opinion on block
+      // numbering (quorum=1 lets it reach commit either way); only the
+      // guard in `#onCommitted` catches it, right before `applyBlock`.
+      const badBlock = makeBlock(5n, key1)
+      badBlock.header.parentHash = await blockHash(finalized[0])
+
+      await expect(consensus.propose(badBlock)).rejects.toThrow(/refusing to apply block 5/)
+      // And it never got applied: still exactly one finalized block.
+      expect(finalized).toHaveLength(1)
+
+      consensus.stop()
+    })
+
+    it('refuses to apply a block whose parentHash does not match the chain tip', async () => {
+      const { consensus } = createSoloPeer(key2)
+      consensus.start()
+
+      const finalized: Block[] = []
+      consensus.onBlockFinalized((block) => finalized.push(block))
+
+      await consensus.propose(makeBlock(1n, key2))
+      expect(finalized).toHaveLength(1)
+
+      // Correct number, but a fabricated parent hash -- e.g. a block built
+      // against the wrong fork, or a bug in whatever computed it.
+      const badBlock = makeBlock(2n, key2)
+      badBlock.header.parentHash = new Uint8Array(32).fill(0xee)
+
+      await expect(consensus.propose(badBlock)).rejects.toThrow(/parentHash does not match/)
+      expect(finalized).toHaveLength(1)
+
+      consensus.stop()
+    })
+
+    it('accepts a correctly-numbered, correctly-linked next block', async () => {
+      const { consensus } = createSoloPeer(key3)
+      consensus.start()
+
+      const finalized: Block[] = []
+      consensus.onBlockFinalized((block) => finalized.push(block))
+
+      await consensus.propose(makeBlock(1n, key3))
+      const parentHash = await blockHash(finalized[0])
+
+      const nextBlock = makeBlock(2n, key3)
+      nextBlock.header.parentHash = parentHash
+      await consensus.propose(nextBlock)
+
+      expect(finalized).toHaveLength(2)
+      expect(finalized[1].header.number).toBe(2n)
+
+      consensus.stop()
     })
   })
 })

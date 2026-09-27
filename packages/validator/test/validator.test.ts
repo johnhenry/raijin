@@ -288,4 +288,61 @@ describe('ValidatorNode', () => {
     expect(receipts).toBeDefined()
     expect(receipts).toHaveLength(1)
   })
+
+  // Issue #47's smaller gaps: importSyncState used to leave already-included
+  // transactions sitting in the mempool, and exportSyncState was synchronous
+  // (so it couldn't wait for an in-progress applyBlock before reading the
+  // store).
+  describe('sync state import/export (issue #47)', () => {
+    it('importSyncState removes the synced block\'s transactions from the mempool', async () => {
+      const tx = makeTransfer(alice, bob, 100n, 0n)
+      await node.submitTransaction(tx)
+      expect(node.mempool.has(tx)).toBe(true)
+
+      await node.importSyncState({
+        storeData: store.exportData(),
+        latestBlock: {
+          header: {
+            number: 1n,
+            parentHash: new Uint8Array(32),
+            stateRoot: new Uint8Array(32),
+            txRoot: new Uint8Array(32),
+            receiptRoot: new Uint8Array(32),
+            timestamp: Date.now(),
+            proposer: alice,
+          },
+          transactions: [tx],
+          signatures: [],
+        },
+        consensus: {
+          view: 0n,
+          viewChangeJustification: [],
+          sequence: 1n,
+          prePrepare: null,
+          prepares: [],
+          commits: [],
+        },
+      })
+
+      // The synced state already reflects this tx having been applied --
+      // it must not still be sitting in the mempool, waiting to be
+      // (incorrectly) re-included in a future block.
+      expect(node.mempool.has(tx)).toBe(false)
+      expect(node.mempool.size).toBe(0)
+    })
+
+    it('exportSyncState resolves to the current state (now async, per issue #47)', async () => {
+      const finalized = new Promise<void>((resolve) => {
+        node.onBlockFinalized(() => resolve())
+      })
+      await node.submitTransaction(makeTransfer(alice, bob, 100n, 0n))
+      await node.blockProducer.produceBlock()
+      await finalized
+
+      const exported = await node.exportSyncState()
+      expect(exported.storeData).toBeInstanceOf(Map)
+      expect(exported.latestBlock).not.toBeNull()
+      expect(exported.consensus).toBeDefined()
+    })
+  })
 })
