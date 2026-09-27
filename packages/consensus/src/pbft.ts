@@ -491,14 +491,9 @@ export class PBFTConsensus {
             `importSyncState: view-change justification for view ${state.view} does not meet quorum`,
           )
         }
-        // Seed `#viewChanges` with the verified quorum so `#doViewChange`
-        // captures it into `#viewJustification` exactly as it would for a
-        // quorum won live through `#handleViewChange`.
-        const map = new Map<string, ViewChangeMessage>()
-        for (const vc of state.viewChangeJustification) {
-          if (vc.newView === state.view) map.set(toHex(vc.from), vc)
-        }
-        this.#viewChanges.set(state.view.toString(), map)
+        // Seed `#viewChanges` with the verified quorum -- see
+        // `#seedViewChangeQuorum`'s docs (shared with `#handleNewView`).
+        this.#seedViewChangeQuorum(state.view, state.viewChangeJustification)
       }
       await this.#doViewChange(state.view)
     }
@@ -686,7 +681,27 @@ export class PBFTConsensus {
     // (newView, sequence) and nothing time-bound, so a recorded quorum stays
     // valid forever; without this check, replaying one rewinds `#view` and
     // clears every in-flight round, indefinitely, with no keys required.
-    if (msg.newView <= this.#view) return
+    if (msg.newView <= this.#view) {
+      // `from` is requesting (or, via `#armViewChangeRetry`'s backoff,
+      // re-requesting) a view we've already reached or passed -- most
+      // likely a partition straggler that missed the NEW-VIEW we broadcast
+      // on completing our own view change (see `#doViewChange`, raijin#53),
+      // or one that's fallen even further behind since. Silently dropping
+      // this used to leave `from` with no way to learn we'd moved on except
+      // by independently assembling its own quorum -- which a minority-side
+      // straggler can never do alone. Reply with proof of our *actual*
+      // current view instead: this lets `from` jump straight there in one
+      // hop, however many views behind it is, rather than only being able
+      // to catch up one view at a time via retries we keep ignoring.
+      if (this.#view > 0n && this.#viewJustification.length > 0) {
+        this.#transport.send(from, {
+          type: 'new-view',
+          view: this.#view,
+          viewChanges: [...this.#viewJustification],
+        })
+      }
+      return
+    }
 
     if (!(await this.#verifyVote('view-change', msg.newView, msg.sequence, NO_BLOCK_DIGEST, msg.signature, from))) return
 
@@ -721,7 +736,32 @@ export class PBFTConsensus {
 
     if (!(await this.#verifyViewChangeQuorum(msg.view, msg.viewChanges))) return
 
+    // Seed `#viewChanges` with the verified quorum so `#doViewChange`
+    // captures it into `#viewJustification` exactly as it would for a
+    // quorum won live through `#handleViewChange` (raijin#53: without this,
+    // a node that only ever catches up via NEW-VIEW never has a
+    // justification of its own to hand onward -- to a straggler probing it
+    // with a stale VIEW-CHANGE, or in a further re-broadcast/export -- even
+    // though the quorum it just verified is exactly as real as one it
+    // would have collected live).
+    this.#seedViewChangeQuorum(msg.view, msg.viewChanges)
     await this.#doViewChange(msg.view)
+  }
+
+  /**
+   * Seed `#viewChanges[view]` with an externally-supplied, already-verified
+   * VIEW-CHANGE quorum so the upcoming `#doViewChange(view)` call captures
+   * it into `#viewJustification` the same way it would a quorum won live
+   * through `#handleViewChange`. Shared by `#handleNewView` and
+   * `importSyncState` — both hand `#doViewChange` a quorum that arrived by
+   * some means other than one-by-one gossip.
+   */
+  #seedViewChangeQuorum(view: bigint, viewChanges: ViewChangeMessage[]): void {
+    const map = new Map<string, ViewChangeMessage>()
+    for (const vc of viewChanges) {
+      if (vc.newView === view) map.set(toHex(vc.from), vc)
+    }
+    this.#viewChanges.set(view.toString(), map)
   }
 
   /**
@@ -1026,6 +1066,23 @@ export class PBFTConsensus {
     // verified quorums by the time they reach here.
     const justifying = this.#viewChanges.get(newView.toString())
     this.#viewJustification = justifying ? [...justifying.values()] : []
+
+    // Announce the completed view change (raijin#53): previously nothing
+    // ever produced a NEW-VIEW message, so a node on the far side of a
+    // (now-healed) partition had no way to learn a quorum had already
+    // formed elsewhere except by independently assembling its own -- which
+    // a permanent minority can never do. Broadcasting here means every
+    // reachable peer converges the moment this completes, without waiting
+    // for it to first probe us with a (now-stale, silently-ignored)
+    // VIEW-CHANGE of its own -- `#handleViewChange`'s reply-on-stale path
+    // above is the fallback for whenever this broadcast itself is dropped.
+    if (this.#viewJustification.length > 0) {
+      this.#transport.broadcast({
+        type: 'new-view',
+        view: newView,
+        viewChanges: [...this.#viewJustification],
+      })
+    }
 
     this.#view = newView
     this.#phase = PBFTPhase.Idle

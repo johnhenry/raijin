@@ -532,6 +532,136 @@ describe('PBFTConsensus', () => {
     })
   })
 
+  /**
+   * Issue #53: after a partition heals, validators can end up split across
+   * two views with no way to converge — a straggler that never itself
+   * collected a quorum of VIEW-CHANGE messages had no path to learn a
+   * quorum had formed elsewhere, because (a) nothing ever produced a
+   * NEW-VIEW message and (b) a peer that had already moved on silently
+   * dropped the straggler's (now-stale) VIEW-CHANGE instead of replying
+   * with proof of where it actually is.
+   */
+  describe('split-view convergence (raijin#53)', () => {
+    it('a peer that received no VIEW-CHANGE gossip of its own still converges once the completing peers broadcast NEW-VIEW', async () => {
+      const p1 = createPeer(key1)
+      const p2 = createPeer(key2)
+      const p3 = createPeer(key3)
+      // Stands in for a peer that was on the far side of a (now-healed)
+      // partition: never sent a VIEW-CHANGE of its own, and never receives
+      // one directly from the mesh below -- only a NEW-VIEW broadcast can
+      // reach it.
+      const p4 = createPeer(key4)
+
+      p1.consensus.start()
+      p2.consensus.start()
+      p3.consensus.start()
+      p4.consensus.start()
+
+      const newView = 1n
+      const sequence = 0n
+
+      // key1/key2/key3 form a genuine quorum of 3 (of 4) purely among
+      // themselves, exactly as if key4 had never been reachable.
+      for (const target of [key1, key2, key3]) {
+        for (const sender of [key1, key2, key3]) {
+          network.createTransport(sender).send(target, await makeViewChange(sender, newView, sequence))
+        }
+      }
+      await network.drainAll()
+
+      expect(p1.consensus.currentView).toBe(1n)
+      expect(p2.consensus.currentView).toBe(1n)
+      expect(p3.consensus.currentView).toBe(1n)
+      // Before the fix, key4 would be stuck at view 0 forever: it has no
+      // VIEW-CHANGE messages of its own to reach quorum with. Completing
+      // the view change now broadcasts NEW-VIEW, which reaches key4 over
+      // the same network connection like any other message.
+      expect(p4.consensus.currentView).toBe(1n)
+
+      p1.consensus.stop()
+      p2.consensus.stop()
+      p3.consensus.stop()
+      p4.consensus.stop()
+    })
+
+    it('a straggler probing with a stale VIEW-CHANGE gets a direct reply instead of being silently ignored', async () => {
+      const p1 = createPeer(key1)
+      const p2 = createPeer(key2)
+      const p3 = createPeer(key3)
+      p1.consensus.start()
+      p2.consensus.start()
+      p3.consensus.start()
+
+      const newView = 1n
+      const sequence = 0n
+
+      for (const target of [key1, key2, key3]) {
+        for (const sender of [key1, key2, key3]) {
+          network.createTransport(sender).send(target, await makeViewChange(sender, newView, sequence))
+        }
+      }
+      await network.drainAll()
+      expect(p1.consensus.currentView).toBe(1n)
+
+      // key4 only starts (and connects) after the quorum above already
+      // formed and its NEW-VIEW broadcast already drained away -- it
+      // missed that broadcast entirely, mirroring a peer that reconnects
+      // late. Its own retry (`#armViewChangeRetry`, raijin#48) re-sends a
+      // VIEW-CHANGE(1) -- a view every one of key1/key2/key3 has already
+      // passed. Before this fix that request was just dropped; now it gets
+      // answered directly.
+      const p4 = createPeer(key4)
+      p4.consensus.start()
+      network.createTransport(key4).send(key1, await makeViewChange(key4, newView, sequence))
+      await network.drainAll()
+
+      expect(p4.consensus.currentView).toBe(1n)
+
+      p1.consensus.stop()
+      p2.consensus.stop()
+      p3.consensus.stop()
+      p4.consensus.stop()
+    })
+
+    it('a peer that adopted a view via NEW-VIEW (not a live quorum) can still prove that view to a later straggler', async () => {
+      const p2 = createPeer(key2)
+      p2.consensus.start()
+
+      const newView = 1n
+      const sequence = 0n
+
+      // p2 catches up purely via an unsolicited-but-quorum-backed NEW-VIEW
+      // -- it never itself collected the VIEW-CHANGE messages live (the
+      // exact path a peer converging via the broadcast in the first test
+      // above, or a reconnecting straggler, takes).
+      const viewChanges: ViewChangeMessage[] = []
+      for (const key of [key1, key3, key4]) {
+        viewChanges.push(await makeViewChange(key, newView, sequence))
+      }
+      network.createTransport(key1).send(key2, { type: 'new-view', view: newView, viewChanges })
+      await network.drainAll()
+      expect(p2.consensus.currentView).toBe(1n)
+
+      // key3 (a bare signing key here, standing in for a peer that hasn't
+      // caught up) probes p2 with a now-stale VIEW-CHANGE(1). Before
+      // `#handleNewView` seeded `#viewChanges` on adopting a view this way
+      // (raijin#53), p2's own justification would have been left empty --
+      // leaving it with nothing to reply with even though the reply path
+      // itself (previous test) was wired up correctly.
+      const received: NewViewMessage[] = []
+      network.createTransport(key3).onMessage((_from, msg) => received.push(msg as NewViewMessage))
+      network.createTransport(key3).send(key2, await makeViewChange(key3, newView, sequence))
+      await network.drainAll()
+
+      expect(received).toHaveLength(1)
+      expect(received[0]?.type).toBe('new-view')
+      expect(received[0]?.view).toBe(1n)
+      expect(received[0]?.viewChanges).toHaveLength(3)
+
+      p2.consensus.stop()
+    })
+  })
+
   describe('view-change prepared-certificate mitigation', () => {
     it('rejects a conflicting re-proposal at an already-prepared sequence, but accepts the same block again', async () => {
       // 4 validators, quorum = 3. p1 = key1 is leader for view 0.
