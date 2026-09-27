@@ -294,4 +294,82 @@ describe('PBFTConsensus sync/catch-up (issue #45)', () => {
 
     soloConsensus.stop()
   })
+
+  /**
+   * The actual gap raijin#51 found: `whenIdle` used to track only the
+   * `StateMachine.applyBlock` call itself. `applyBlock` finishing means the
+   * store is fully mutated -- but `#onCommitted`'s remaining work
+   * (computing stateRoot/receiptRoot, advancing this node's own finalized
+   * tip, and notifying `onBlockFinalized` listeners -- which is what
+   * `ValidatorNode` uses to advance `latestBlock`) still runs AFTER that,
+   * with further `await`s in between. A `whenIdle` racing against exactly
+   * that window could -- and in the issue's repro, did, 25 of 25 times --
+   * resume once `applyBlock` settles and read a store that already reflects
+   * the new block paired with a `latestBlock` that still names the old one.
+   *
+   * This holds `stateRoot()` open instead of `applyBlock` itself, to prove
+   * `whenIdle` now waits for the WHOLE sequence, not just the part that
+   * mutates the store.
+   */
+  it('whenIdle does not resolve until the full apply-and-finalize sequence -- not just applyBlock -- has settled (issue #51)', async () => {
+    const soloValidators = new ValidatorSet([key1])
+    const soloStore = new InMemoryStateStore()
+    const soloSm = new StateMachine(soloStore, mockVerifier)
+
+    const originalStateRoot = soloSm.stateRoot.bind(soloSm)
+    let releaseStateRoot: (() => void) | null = null
+    const held = new Promise<void>((resolve) => { releaseStateRoot = resolve })
+    soloSm.stateRoot = () => held.then(() => originalStateRoot())
+
+    const soloConsensus = new PBFTConsensus({
+      identity: key1,
+      chainId: TEST_CHAIN_ID,
+      validators: soloValidators,
+      transport: network.createTransport(key1),
+      timer: new MockTimer(),
+      stateMachine: soloSm,
+      sign: mockSign(key1),
+      verify: mockVerifier,
+      blockTime: 100,
+      viewTimeout: 500,
+    })
+    soloConsensus.start()
+
+    let finalizedHandlerRan = false
+    soloConsensus.onBlockFinalized(() => { finalizedHandlerRan = true })
+
+    const block: Block = {
+      header: {
+        number: 1n,
+        parentHash: new Uint8Array(32),
+        stateRoot: new Uint8Array(32),
+        txRoot: new Uint8Array(32),
+        receiptRoot: new Uint8Array(32),
+        timestamp: Date.now(),
+        proposer: key1,
+      },
+      transactions: [],
+      signatures: [],
+    }
+
+    const proposePromise = soloConsensus.propose(block)
+
+    // Let the round get all the way past `applyBlock` (unpatched, so it
+    // completes normally) and get stuck on the patched `stateRoot()`.
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0))
+
+    let idleResolved = false
+    const idlePromise = soloConsensus.whenIdle().then(() => { idleResolved = true })
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0))
+    expect(idleResolved, 'whenIdle resolved before stateRoot/finalize-notify ran, even though applyBlock had already mutated the store').toBe(false)
+    expect(finalizedHandlerRan).toBe(false)
+
+    releaseStateRoot!()
+    await proposePromise
+    await idlePromise
+    expect(idleResolved).toBe(true)
+    expect(finalizedHandlerRan, 'whenIdle resolved before the finalize notification (which ValidatorNode uses to advance latestBlock) actually ran').toBe(true)
+
+    soloConsensus.stop()
+  })
 })

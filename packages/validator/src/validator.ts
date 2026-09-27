@@ -10,7 +10,7 @@ import type {
   StateStore,
   SignatureVerifier,
 } from '@johnhenry/raijin-core'
-import { StateMachine, encodeTx, encodeTxSigned, hash, toHex } from '@johnhenry/raijin-core'
+import { StateMachine, encodeTx, encodeTxSigned, hash, toHex, fromHex } from '@johnhenry/raijin-core'
 import {
   PBFTConsensus,
   ValidatorSet,
@@ -310,6 +310,24 @@ export class ValidatorNode {
       // checks against this node's true last-finalized block instead of
       // its own pre-sync genesis default.
       await this.#consensus.seedFinalized(state.latestBlock)
+    }
+
+    // The `removeBatch` above only prunes the transactions the LATEST
+    // imported block actually names. But the imported store may reflect
+    // many earlier blocks this node never saw individually, and any sender
+    // with pending transactions here may have had further nonces consumed
+    // by one of those earlier, unseen blocks (raijin#51 — up to 194 of 196
+    // pending transactions survived an import in the issue's repro for
+    // exactly this reason). Reconcile every pending sender against the
+    // freshly-imported account state directly, by nonce, rather than trying
+    // to reconstruct which specific past blocks included what — this catches
+    // all of them in one pass, regardless of how far behind this node's
+    // mempool was.
+    const pendingSenders = new Set(this.#mempool.pending().map((tx) => toHex(tx.from)))
+    for (const senderHex of pendingSenders) {
+      const senderBytes = fromHex(senderHex)
+      const account = await this.#stateMachine.getAccount(senderBytes)
+      this.#mempool.pruneBelowNonce(senderBytes, account.nonce)
     }
 
     await this.#consensus.importSyncState(state.consensus)

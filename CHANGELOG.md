@@ -1,5 +1,121 @@
 # Changelog
 
+## 0.0.6 (2026-09-26)
+
+Follow-up to #47/#48 (below), reported the same day: a permanent-halt
+scenario the #47 apply-time guard didn't actually prevent (it only detected
+it, one view too late), and two more `exportSyncState`/`importSyncState`
+gaps found once `exportSyncState` became `async`.
+
+**`@johnhenry/raijin-consensus`** `0.0.4` → `0.0.5`
+
+- **Issue #50 — a lagging leader's stale proposal could halt the chain
+  permanently, because the block-number/parent-hash guard only ran at apply
+  time.** The #47 fix added a check in `#onCommitted` that rejects a block
+  whose number/parent doesn't match `lastFinalized + 1` — but nothing
+  checked the proposal any earlier, so a leader that's behind (just
+  restarted, or missed a round) could still get its stale-numbered block
+  all the way through PRE-PREPARE → PREPARE → COMMIT: every honest node
+  PREPAREs and COMMITs it (the #47 check hasn't run yet), and only THEN does
+  everyone refuse to *apply* it. That refusal triggers a view change — but
+  the block is now a validly "prepared" certificate, and `#doViewChange`
+  automatically carries a leader's own prepared certificate forward into
+  the new view. The next leader re-proposes the exact same stale block,
+  every node prepares/commits/refuses it again, another view change, repeat
+  forever. Reproduced 3 of 3 times in the issue's repro (`n=7`, 300ms ±90%
+  jitter, crash-and-`syncFrom` one node every 6s).
+
+  Fixed two ways, matching the issue's own suggested fix:
+  1. `#handlePrePrepare` now validates the proposal's own `header.number`
+     and `header.parentHash` against this node's actual chain tip
+     (`#lastFinalizedNumber`/`#lastFinalizedHash`) as soon as the
+     PRE-PREPARE arrives, before sending a PREPARE for it — not just at
+     apply time. A stale proposal is now rejected outright; nobody PREPAREs
+     it, so it never becomes a prepared certificate in the first place, and
+     there is nothing for a view change to carry forward. The node doesn't
+     resync on its own here — it simply lets its existing view timer run
+     out, the same as if the leader had never proposed at all.
+  2. `#doViewChange`'s carry-over now re-checks staleness at carry-over
+     time too, independent of (1): a prepared certificate whose block
+     number is already at-or-behind the finalized head is dropped instead
+     of re-proposed, and the stale `#preparedCert`/`#preparedBlock` entry is
+     cleared so it can't keep rejecting a fresh, correctly-numbered proposal
+     at that sequence. This covers a block that was validly prepared at the
+     time but became stale later out of band (e.g. this node catches up
+     past that sequence via `seedFinalized`/`importSyncState` without
+     anything else clearing the now-obsolete certificate) — a case (1)
+     doesn't reach, since (1) only guards proposals arriving after the fact.
+
+  See `packages/consensus/test/pbft.test.ts`'s new "PRE-PREPARE-time head
+  validation," "lagging-leader permanent halt," and "view-change carry-over
+  drops an already-stale prepared block" suites (the middle one reproduces
+  the full cycle: stale proposal → rejected outright → next, honest leader
+  recovers instead of re-proposing it), and
+  `packages/test-harness/test/stale-leader-halt.test.ts` (the same scenario
+  through the real `ValidatorNode`/`BlockProducer` stack, with a genuinely
+  Byzantine leader). All verified to fail with the described permanent-halt
+  symptom against the pre-fix code and pass against the fix.
+
+  The issue also reported an unexplained secondary finding: 1 of 5 soak runs
+  halted on a parentHash mismatch at the same height across every node, not
+  reproduced in 3 further runs by the issue's author. Re-run here as 8
+  additional soak runs (`n=7`, jittered delays refreshed every 2s, one
+  random node crashed-and-resynced every 6s, 45–60s of simulated time each,
+  66 total crash/resync cycles) — 0 parentHash-mismatch errors and 0 fork
+  disagreements across all of them. Could not reproduce it; not chased
+  further, per the issue's own instruction not to guess at a fix for
+  something that can't be observed.
+
+- **Issue #51 (part 1) — `exportSyncState` taken mid-`applyBlock` could
+  return a store already ahead of `latestBlock`.** `whenIdle` (used by
+  `ValidatorNode.exportSyncState` before it reads the store) tracked only
+  the `StateMachine.applyBlock` promise itself. `applyBlock` finishing means
+  the store is fully mutated — but `#onCommitted`'s remaining work
+  (computing `stateRoot`/`receiptRoot`, advancing this node's own finalized
+  tip, and firing the `onBlockFinalized` notification that
+  `ValidatorNode` uses to advance `latestBlock`) still runs afterward, with
+  further `await`s in between. A racing `exportSyncState` could resume in
+  exactly that window: store already reflecting block *N+1*, `latestBlock`
+  still naming *N* — 25 of 25 reproductions in the issue. `#onCommitted`'s
+  apply-and-finalize sequence is now tracked *in full* under
+  `#applyingBlock` (renamed in its docs, not its name, to reflect the wider
+  scope), so `whenIdle` doesn't resolve until every bit of that has
+  actually finished. See `packages/consensus/test/sync.test.ts`'s new
+  `whenIdle` test (holds `stateRoot()` open instead of `applyBlock`, to
+  prove `whenIdle` now waits past the part that only mutates the store) and
+  `packages/validator/test/validator.test.ts`'s matching `exportSyncState`
+  test through the real `ValidatorNode`.
+
+**`@johnhenry/raijin-mempool`** `0.0.2` → `0.0.3`
+
+- **Issue #51 (part 2) — `importSyncState` only pruned the latest imported
+  block's own transactions, leaving stale mempool entries from every earlier
+  block it never saw individually.** After a sync, `ValidatorNode` knew
+  which transactions `latestBlock` named, but a snapshot spans however many
+  blocks the exporting peer is ahead by — up to 194 of 196 pending
+  transactions survived an import in the issue's repro because only the
+  last block's list was ever pruned. Added `Mempool.pruneBelowNonce(sender,
+  currentNonce)`, which drops every pending transaction from `sender` whose
+  nonce is already behind the account's actual on-chain nonce — checking
+  the account directly catches everything at once, regardless of how many
+  blocks this node fell behind by, rather than trying to reconstruct which
+  past transactions were included. `ValidatorNode.importSyncState` now
+  calls it for every sender with pending transactions after importing the
+  store. See `packages/mempool/test/mempool.test.ts`'s new
+  `pruneBelowNonce` suite and `packages/validator/test/validator.test.ts`'s
+  matching `importSyncState` test.
+
+**`@johnhenry/raijin-validator`** `0.0.4` → `0.0.5`
+
+- The `importSyncState` mempool-pruning fix above. Dependency ranges bumped
+  to pull in `@johnhenry/raijin-consensus@^0.0.5` and
+  `@johnhenry/raijin-mempool@^0.0.3`.
+
+**`raijin-test-harness`** (internal, unpublished)
+
+- New `test/stale-leader-halt.test.ts` (issue #50, see above). Dependency
+  ranges bumped to match.
+
 ## 0.0.5 (2026-09-26)
 
 Follow-up to #44/#45 (below): two more PBFT correctness gaps reported after

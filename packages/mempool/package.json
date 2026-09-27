@@ -1,6 +1,6 @@
 {
   "name": "@johnhenry/raijin-mempool",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Transaction mempool with fee-based ordering for the Raijin mesh rollup",
   "repository": {
     "type": "git",
