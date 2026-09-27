@@ -231,8 +231,18 @@ export class TestOrchestrator {
    * since every block's state root was unconditionally zero). Real
    * validators need a real state-sync protocol before safely rejoining;
    * this peer-copy is the test harness's minimal stand-in for that.
+   *
+   * Also seeds the fresh `PBFTConsensus`'s own chain-tip bookkeeping (see
+   * `seedFinalized`, raijin#47) from the peer's `latestBlock`. Since this
+   * method copies the store directly rather than through the real sync
+   * protocol, nothing else does that seeding for it — without it, the
+   * restarted node's brand-new consensus engine would start at
+   * `lastFinalized = 0` while its copied store already reflects a much
+   * later height, and `#onCommitted`'s number/parent-hash guard would then
+   * refuse the very next block this node is asked to apply as "not
+   * lastFinalized + 1", even though the store it's building on is correct.
    */
-  restartNode(id: string): void {
+  async restartNode(id: string): Promise<void> {
     const key = this.#nodeKeys.get(id)
     if (!key) throw new Error(`Unknown node: ${id}`)
 
@@ -252,6 +262,9 @@ export class TestOrchestrator {
     const peer = [...this.nodes.values()].find((n) => n.running)
     if (peer) {
       newNode.store.importData(peer.store.exportData())
+      if (peer.latestBlock) {
+        await newNode.node.consensus.seedFinalized(peer.latestBlock)
+      }
     }
 
     this.nodes.set(id, newNode)

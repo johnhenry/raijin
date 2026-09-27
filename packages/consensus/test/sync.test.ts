@@ -218,4 +218,80 @@ describe('PBFTConsensus sync/catch-up (issue #45)', () => {
     rejoiner.consensus.stop()
     underQuorum.consensus.stop()
   })
+
+  /**
+   * `whenIdle` (issue #47's smaller gap): `ValidatorNode.exportSyncState`
+   * awaits this before snapshotting the state store, so a peer asking for a
+   * sync while this node is mid-`applyBlock` doesn't get a half-applied
+   * state that no block's digest actually commits to. This isolates the
+   * primitive itself: `applyBlock` is held open on purpose (via a stub that
+   * defers the real call rather than faking its result), and `whenIdle`
+   * must not resolve until it's released.
+   */
+  it('whenIdle does not resolve until an in-progress applyBlock finishes', async () => {
+    // A single-validator cluster: its own vote alone reaches quorum, so
+    // `propose()` drives the round all the way through `applyBlock` with no
+    // other peer needed, and there's a StateMachine this test can patch
+    // directly (unlike `createPeer`'s, which is private to that helper).
+    const soloValidators = new ValidatorSet([key1])
+    const soloStore = new InMemoryStateStore()
+    const soloSm = new StateMachine(soloStore, mockVerifier)
+
+    // Hold `applyBlock` open until released, rather than faking its
+    // result -- the real transaction loop still runs, just on a delay this
+    // test controls.
+    const originalApplyBlock = soloSm.applyBlock.bind(soloSm)
+    let releaseApply: (() => void) | null = null
+    const held = new Promise<void>((resolve) => { releaseApply = resolve })
+    soloSm.applyBlock = (block) => held.then(() => originalApplyBlock(block))
+
+    const soloConsensus = new PBFTConsensus({
+      identity: key1,
+      chainId: TEST_CHAIN_ID,
+      validators: soloValidators,
+      transport: network.createTransport(key1),
+      timer: new MockTimer(),
+      stateMachine: soloSm,
+      sign: mockSign(key1),
+      verify: mockVerifier,
+      blockTime: 100,
+      viewTimeout: 500,
+    })
+    soloConsensus.start()
+
+    const block: Block = {
+      header: {
+        number: 1n,
+        parentHash: new Uint8Array(32),
+        stateRoot: new Uint8Array(32),
+        txRoot: new Uint8Array(32),
+        receiptRoot: new Uint8Array(32),
+        timestamp: Date.now(),
+        proposer: key1,
+      },
+      transactions: [],
+      signatures: [],
+    }
+
+    const proposePromise = soloConsensus.propose(block)
+
+    // Let the round actually reach `applyBlock` (and get stuck on `held`)
+    // before checking `whenIdle`. `hash`/`sign` are real async I/O
+    // (crypto.subtle), not microtasks, so this needs real macrotask turns,
+    // not just `Promise.resolve()` — see `TestOrchestrator.drainFully`'s
+    // own docs for the same reasoning.
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0))
+
+    let idleResolved = false
+    const idlePromise = soloConsensus.whenIdle().then(() => { idleResolved = true })
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0))
+    expect(idleResolved, 'whenIdle resolved while applyBlock was still held open').toBe(false)
+
+    releaseApply!()
+    await proposePromise
+    await idlePromise
+    expect(idleResolved).toBe(true)
+
+    soloConsensus.stop()
+  })
 })

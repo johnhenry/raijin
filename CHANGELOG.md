@@ -1,5 +1,110 @@
 # Changelog
 
+## 0.0.5 (2026-09-26)
+
+Follow-up to #44/#45 (below): two more PBFT correctness gaps reported after
+those fixes shipped, found the same way — running Raijin under real network
+reordering and partition/heal cycles in ORRERY. Both are, again, protocol
+behavior, not packaging.
+
+**`@johnhenry/raijin-consensus`** `0.0.3` → `0.0.4`
+
+- **Issue #47 — a PRE-PREPARE for the next sequence could be accepted before
+  the current round's COMMITs, silently skipping a finalized block.** The
+  #44 fix buffered a PREPARE/COMMIT that arrives one sequence ahead of a
+  node's current round; it did not cover PRE-PREPARE itself.
+  `#handlePrePrepare` accepted a PRE-PREPARE for the next sequence
+  unconditionally, with no check that the round currently in flight had
+  actually finished. Under heavy reordering, the leader's PRE-PREPARE for
+  sequence *n+1* — broadcast the instant the leader itself finalizes *n* —
+  can reach a node before that node's own COMMITs for *n* arrive, simply
+  because those specific messages are stuck on a slower link. Accepting it
+  then abandoned the in-flight round (and every PREPARE/COMMIT vote already
+  collected for it) and started executing block *n+1* on state that never
+  saw block *n* — a silent state-root divergence, since nothing checked the
+  new block's number or parent-hash linkage either.
+
+  Fixed two ways, independently:
+  1. **Ordering.** `#handlePrePrepare` now gates on sequence exactly while a
+     round is genuinely in flight (`phase !== Idle`): a PRE-PREPARE for the
+     next sequence arriving then is buffered (mirroring
+     `#pendingPrepares`/`#pendingCommits`, bounded the same way) and replayed
+     from `#onCommitted` once the in-flight round actually finalizes. Not
+     gated while idle — `#sequence` there is "last round attempted," not
+     "last round finalized" (a view change can abandon a *prepared-but-never-
+     committed* round, landing back on Idle at the SAME sequence, which the
+     new view is entitled to re-propose), so gating on it there produced
+     false positives during ordinary view changes.
+  2. **Defense in depth, independent of the ordering fix.** `#onCommitted`
+     now refuses to run `applyBlock` unless the block's `header.number` is
+     exactly `lastFinalized + 1` and its `parentHash` matches this node's own
+     chain tip (`blockHash` of the last block it actually applied) —
+     checked straight from the block itself, so it still catches a
+     misordered apply even if some other, future code path reaches
+     `#onCommitted` incorrectly. `PBFTConsensus.seedFinalized(block)` seeds
+     this bookkeeping for a node that adopts its state out of band (via
+     `ValidatorNode.importSyncState`, below) rather than by executing blocks
+     itself.
+
+  See `packages/test-harness/test/early-pre-prepare.test.ts` (4 validators,
+  one node's inbound links from two peers delayed so it's still short a
+  PREPARE quorum on round *n* when round *n+1*'s PRE-PREPARE arrives over an
+  undelayed link — confirms the node neither jumps ahead nor gets stuck, and
+  catches up cleanly once the delay lifts) and
+  `packages/consensus/test/pbft.test.ts`'s new "applyBlock guard" suite
+  (a single-validator round exercising the number/parent-hash checks
+  directly).
+
+  Two smaller gaps from the same issue, fixed alongside it:
+  - `ValidatorNode.importSyncState` left a synced block's transactions
+    sitting in the mempool even though the imported state already reflects
+    them as applied — `removeBatch` is now called for `state.latestBlock`,
+    mirroring what a live `#onFinalized` does. See
+    `packages/validator/test/validator.test.ts`.
+  - `ValidatorNode.exportSyncState` is now `async` and awaits
+    `PBFTConsensus.whenIdle()` before reading the store, so a peer syncing
+    from a node that's mid-`applyBlock` (which mutates the store one
+    transaction at a time, not atomically) can no longer receive a
+    half-applied state that no block's digest actually commits to. See
+    `packages/consensus/test/sync.test.ts`.
+
+- **Issue #48 — the view-change timer fired once and was never re-armed, so
+  an unanswered VIEW-CHANGE stalled the node permanently.** `#startViewTimer`
+  scheduled exactly one `#requestViewChange` call; if that VIEW-CHANGE
+  didn't reach quorum — e.g. genuinely lost, not merely delayed, during a
+  network partition — nothing ever sent another one, even long after the
+  partition healed. `#requestViewChange` now re-arms itself
+  (`#armViewChangeRetry`) whenever its own VIEW-CHANGE doesn't complete a
+  view change by itself: exponential backoff off the configured
+  `viewTimeout` (capped at 60s), re-sending for the same target view, reset
+  back to the base timeout the moment real progress happens (a propose, an
+  accepted PRE-PREPARE, a finalized block, or a completed view change — see
+  `#startViewTimer`). It keeps retrying until it observes that view (or a
+  later one) actually installed, by any means — its own retry reaching
+  quorum, an unsolicited but properly quorum-backed NEW-VIEW, or catching up
+  via `importSyncState`.
+
+  See `packages/test-harness/test/view-change-retry.test.ts`: 4 validators,
+  leader crashed, all traffic between the 3 survivors actually dropped (not
+  partitioned-and-held) for the first view-timeout round, confirming the
+  cluster is genuinely stalled — then the drop lifts and only a later,
+  re-armed retry gets a VIEW-CHANGE through and consensus resumes.
+
+**`@johnhenry/raijin-validator`** `0.0.3` → `0.0.4`
+
+- `PBFTConsensus.seedFinalized`, the async `exportSyncState`, and the
+  mempool cleanup in `importSyncState` described above. Dependency range
+  bumped to pull in the fixed `@johnhenry/raijin-consensus@^0.0.4`.
+
+**`raijin-test-harness`** (internal, unpublished)
+
+- `TestOrchestrator.restartNode` now also seeds the restarted node's fresh
+  `PBFTConsensus` via `seedFinalized` — without it, the new engine's
+  `lastFinalized` bookkeeping started at genesis while its (directly
+  store-copied) state reflected a much later height, and #47's new
+  `#onCommitted` guard correctly refused the next block on that basis. Now
+  `async`; its one caller (`MembershipChurnWorkload`) awaits it.
+
 ## 0.0.4 (2026-09-26)
 
 Two real protocol-correctness bugs, found while wiring Raijin into ORRERY (a

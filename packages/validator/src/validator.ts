@@ -249,14 +249,22 @@ export class ValidatorNode {
    * node's application state (requires the store to be a
    * `SyncableStateStore` — throws otherwise), its last finalized block, and
    * its consensus view/round state. See `importSyncState`/`syncFrom`.
+   *
+   * Awaits `PBFTConsensus.whenIdle()` before reading the store: without
+   * this, a peer that calls `exportSyncState` while THIS node is in the
+   * middle of `applyBlock` — which mutates the store one transaction at a
+   * time, not atomically (see `StateMachine.applyBlock`'s own docs) — could
+   * receive a store snapshot that reflects only some of the pending block's
+   * transactions, one that no block's digest actually commits to (raijin#47).
    */
-  exportSyncState(): ValidatorSyncState {
+  async exportSyncState(): Promise<ValidatorSyncState> {
     if (!isSyncable(this.#store)) {
       throw new Error(
         'ValidatorNode.exportSyncState: this store does not support exportData()/importData() '
         + '(see SyncableStateStore) — state sync is unavailable for this backend',
       )
     }
+    await this.#consensus.whenIdle()
     return {
       storeData: this.#store.exportData(),
       latestBlock: this.#latestBlock,
@@ -287,7 +295,21 @@ export class ValidatorNode {
 
     if (state.latestBlock) {
       this.#latestBlock = state.latestBlock
+      // The synced state already reflects this block's transactions having
+      // been applied — leaving them in the mempool would let this node
+      // (once it's caught up enough to lead) try to re-include a
+      // transaction whose nonce the synced state has already consumed,
+      // wasting a mempool slot on something the state machine can only
+      // revert (raijin#47). Mirrors what a live `#onFinalized` does for
+      // every block this node finalizes itself.
+      this.#mempool.removeBatch(state.latestBlock.transactions)
       await this.#blockProducer.advance(state.latestBlock)
+      // Seed the consensus engine's own chain-tip bookkeeping (see
+      // `PBFTConsensus.seedFinalized`) BEFORE adopting any round below, so
+      // its defense-in-depth number/parent-hash guard in `#onCommitted`
+      // checks against this node's true last-finalized block instead of
+      // its own pre-sync genesis default.
+      await this.#consensus.seedFinalized(state.latestBlock)
     }
 
     await this.#consensus.importSyncState(state.consensus)
@@ -302,7 +324,7 @@ export class ValidatorNode {
    * data shape is what a wire protocol would carry either way.
    */
   async syncFrom(peer: ValidatorNode): Promise<void> {
-    await this.importSyncState(peer.exportSyncState())
+    await this.importSyncState(await peer.exportSyncState())
   }
 
   #scheduleBlockProduction(): void {
