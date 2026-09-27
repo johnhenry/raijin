@@ -1,5 +1,78 @@
 # Changelog
 
+## 0.0.7 (2026-09-27)
+
+Follow-up to #48/#50/#51 (below), reported the same day, verifying those
+fixes hold (50/50 exports taken during `committed` hash to their root, 0
+stale mempool txs across ~190 imports, no permanent halts across 8 crash
+soaks) but finding the exponential-backoff view-change retry from #48 still
+doesn't reliably recover a halt-then-heal: a partition can leave validators
+permanently split across two views with no way to converge.
+
+**`@johnhenry/raijin-consensus`** `0.0.5` → `0.0.6`
+
+- **Issue #53 — after a partition heals, validators can end up split across
+  two views forever: no `NEW-VIEW` was ever produced, and a peer that had
+  already moved on silently dropped a straggler's now-stale `VIEW-CHANGE`
+  instead of telling it where it actually is.** Reproduced in the issue's
+  own soak (`n=7`, 300ms ±90% jitter, partition 3-of-7 for 12s then heal):
+  bare `0.0.5` recovered only 3 of 7 runs, the other 4 still halted 180s
+  after the heal. This design (any node completes a view change directly
+  once it independently collects a live quorum of `VIEW-CHANGE` messages —
+  see `#handleViewChange`) never needed a leader-broadcast `NEW-VIEW` to
+  make progress on the *majority* side, so nobody ever built one, even
+  though `#handleNewView` (accepting one from a peer, provided it's backed
+  by a real quorum) has existed since #44/#45. A permanent-minority side of
+  a partition can never independently assemble its own quorum — its only
+  path to converge was always going to be hearing about the majority's.
+
+  Fixed three ways:
+  1. `#doViewChange` now broadcasts the `NEW-VIEW` it just assembled
+     (carrying the same `#viewJustification` `exportSyncState` already
+     hands a rejoining peer) the moment a view change completes. Every
+     reachable peer converges as soon as this lands, including one that
+     never sent or received a single `VIEW-CHANGE` of its own.
+  2. `#handleViewChange` no longer silently drops a `VIEW-CHANGE` for a
+     view it has already reached or passed (a straggler's un-escalated
+     retry from #48's backoff, or one arriving after this node moved even
+     further on). It now replies directly to the sender with a `NEW-VIEW`
+     proving its actual current view — a fallback for whenever (1)'s
+     broadcast itself doesn't land, and a one-hop catch-up regardless of
+     how many views behind the sender actually is.
+  3. `#handleNewView` never seeded `#viewChanges` with the quorum it had
+     just verified before calling `#doViewChange` — unlike
+     `importSyncState`, which already did this correctly for the same
+     reason. A node that only ever caught up via an incoming `NEW-VIEW`
+     (exactly what (1) and (2) now produce) was left with an empty
+     `#viewJustification`, unable to prove its own current view onward to
+     a *later* straggler even though its adopted view was exactly as real
+     as one won live. Extracted the seeding logic both call sites need into
+     `#seedViewChangeQuorum`, shared rather than duplicated.
+
+  See `packages/consensus/test/pbft.test.ts`'s new "split-view convergence
+  (raijin#53)" suite: a peer that received no gossip of its own converging
+  purely from another peer's completion broadcast; a straggler's stale
+  retry getting answered instead of ignored; and a peer that itself only
+  ever adopted a view via `NEW-VIEW` still being able to prove it onward.
+  All three fail against the pre-fix code (verified with a negative
+  control: reverting just `pbft.ts` fails exactly these 3 new tests, with
+  the other 34 pre-existing tests unaffected) and pass against the fix.
+
+**`@johnhenry/raijin-validator`** `0.0.5` → `0.0.6`
+
+- No code change; carries the consensus fix above. Dependency range on
+  `@johnhenry/raijin-consensus` widened from `^0.0.5` (which, for a
+  pre-1.0 `0.0.x` version, resolves to *exactly* `0.0.5`) to
+  `>=0.0.6 <0.1.0`, so this and future `raijin-consensus` `0.0.x` patches
+  reach validator without a release here just to bump the pin.
+
+**`raijin-test-harness`** (internal, unpublished)
+
+- Same dependency-range widening, for `@johnhenry/raijin-consensus` and
+  `@johnhenry/raijin-validator`, so local workspace installs keep resolving
+  to the in-repo packages rather than trying to satisfy a now-exact-pinned
+  range against the registry.
+
 ## 0.0.6 (2026-09-26)
 
 Follow-up to #47/#48 (below), reported the same day: a permanent-halt
