@@ -92,6 +92,40 @@ export class Mempool {
     return count
   }
 
+  /**
+   * Drop every pending transaction from `sender` whose nonce is strictly
+   * less than `currentNonce` — i.e., already consumed on-chain, whether or
+   * not this mempool ever saw the specific block that consumed it.
+   *
+   * `removeBatch` (used after a block is finalized locally, or after a
+   * state sync import) only prunes the exact transactions named by a known
+   * block's transaction list. That's insufficient after
+   * `ValidatorNode.importSyncState` adopts a snapshot: only the *latest*
+   * imported block's own transactions are known individually, but the
+   * imported state may reflect many earlier blocks this node never saw, and
+   * senders included in any of those still have older, now-already-included
+   * transactions sitting in the mempool (raijin#51 — up to 194 of 196
+   * pending transactions survived an import in the issue's repro because
+   * only the latest block's list was pruned). Checking the account's own
+   * nonce, rather than trying to reconstruct exactly which past
+   * transactions were included, catches all of them in one pass regardless
+   * of how many blocks this node fell behind by. Returns the count removed.
+   */
+  pruneBelowNonce(sender: Uint8Array, currentNonce: bigint): number {
+    const senderHex = toHex(sender)
+    const nonces = this.#senderNonces.get(senderHex)
+    if (!nonces) return 0
+
+    let count = 0
+    for (const nonce of [...nonces]) {
+      if (nonce < currentNonce) {
+        const tx = this.#txs.get(`${senderHex}:${nonce}`)
+        if (tx && this.remove(tx)) count++
+      }
+    }
+    return count
+  }
+
   /** Get all pending transactions, ordered by fee (highest first). */
   pending(): Transaction[] {
     return orderByFee([...this.#txs.values()], this.#feeExtractor)

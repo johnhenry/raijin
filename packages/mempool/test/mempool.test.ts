@@ -349,4 +349,66 @@ describe('Mempool', () => {
       expect(pool.hasNonce(tx.from, 42n)).toBe(false)
     })
   })
+
+  // Issue #51: `removeBatch` (used after a state-sync import) only prunes
+  // the exact transactions a known block names. That's insufficient after
+  // `ValidatorNode.importSyncState` adopts a snapshot spanning many blocks
+  // this node never saw individually -- only the LATEST one's own
+  // transactions are known. `pruneBelowNonce` catches everything a sender's
+  // on-chain nonce says is already included, regardless of how many blocks
+  // this node fell behind by.
+  describe('pruneBelowNonce (issue #51)', () => {
+    it('removes every pending tx from a sender whose nonce is below the given nonce', async () => {
+      const sender = new Uint8Array(32)
+      sender[0] = 9
+      const tx0 = makeTx({ sender: 9, nonce: 0n })
+      const tx1 = makeTx({ sender: 9, nonce: 1n })
+      const tx2 = makeTx({ sender: 9, nonce: 2n })
+      await pool.submit(tx0)
+      await pool.submit(tx1)
+      await pool.submit(tx2)
+      expect(pool.size).toBe(3)
+
+      // The account's on-chain nonce is now 2 -- nonces 0 and 1 have been
+      // consumed (by blocks this mempool may never have seen individually),
+      // nonce 2 has not.
+      const removed = pool.pruneBelowNonce(sender, 2n)
+
+      expect(removed).toBe(2)
+      expect(pool.has(tx0)).toBe(false)
+      expect(pool.has(tx1)).toBe(false)
+      expect(pool.has(tx2)).toBe(true)
+      expect(pool.size).toBe(1)
+    })
+
+    it('does not touch a different sender\'s pending transactions', async () => {
+      const senderA = new Uint8Array(32)
+      senderA[0] = 1
+      const txA0 = makeTx({ sender: 1, nonce: 0n })
+      const txB0 = makeTx({ sender: 2, nonce: 0n })
+      await pool.submit(txA0)
+      await pool.submit(txB0)
+
+      pool.pruneBelowNonce(senderA, 1n)
+
+      expect(pool.has(txA0)).toBe(false)
+      expect(pool.has(txB0)).toBe(true)
+    })
+
+    it('is a no-op for a sender with no pending transactions', () => {
+      const sender = new Uint8Array(32)
+      sender[0] = 99
+      expect(pool.pruneBelowNonce(sender, 5n)).toBe(0)
+    })
+
+    it('removes nothing when the given nonce is not ahead of any pending transaction', async () => {
+      const sender = new Uint8Array(32)
+      sender[0] = 3
+      const tx = makeTx({ sender: 3, nonce: 5n })
+      await pool.submit(tx)
+
+      expect(pool.pruneBelowNonce(sender, 5n)).toBe(0) // nonce 5 is not < 5
+      expect(pool.has(tx)).toBe(true)
+    })
+  })
 })

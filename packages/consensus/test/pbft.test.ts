@@ -951,4 +951,230 @@ describe('PBFTConsensus', () => {
       consensus.stop()
     })
   })
+
+  /**
+   * Issue #50: the applyBlock guard above (issue #47) only runs at APPLY
+   * time -- after a proposal has already gone through PRE-PREPARE, PREPARE
+   * and COMMIT. That is too late: every honest peer PREPAREs and COMMITs a
+   * stale proposal before anyone refuses to *apply* it, and by then the
+   * block is a validly "prepared" certificate that survives into the next
+   * view (see `#doViewChange`'s carry-over, and the `describe` block below).
+   * These tests move the same number/parentHash check to PRE-PREPARE
+   * acceptance time, so a stale proposal is rejected before a single
+   * PREPARE is ever sent for it.
+   */
+  describe('PRE-PREPARE-time head validation (issue #50)', () => {
+    it('rejects a PRE-PREPARE whose block number is not lastFinalized + 1, before sending a PREPARE for it', async () => {
+      const p2 = createPeer(key2) // not leader for view 0 (key1 is)
+      p2.consensus.start()
+
+      // A stale/lagging leader's proposal: correct (genesis) parent, but a
+      // block number that isn't the next one. Before raijin#50, nothing
+      // checked the block's own header until `#onCommitted` -- this node
+      // would have PREPAREd it.
+      const staleBlock = makeBlock(5n, key1)
+      const staleDigest = await computeDigest(staleBlock)
+      network.createTransport(key1).send(key2, await makePrePrepare(key1, 0n, 1n, staleBlock, staleDigest))
+      await network.drainAll()
+
+      expect(p2.consensus.phase).toBe(PBFTPhase.Idle) // never even reached PrePrepared
+
+      p2.consensus.stop()
+    })
+
+    it('rejects a PRE-PREPARE whose parentHash does not match this node\'s chain tip', async () => {
+      const p3 = createPeer(key3)
+      p3.consensus.start()
+
+      // Correct number (1 = lastFinalized(0) + 1), but a fabricated parent.
+      const staleBlock = makeBlock(1n, key1)
+      staleBlock.header.parentHash = new Uint8Array(32).fill(0xee)
+      const staleDigest = await computeDigest(staleBlock)
+      network.createTransport(key1).send(key3, await makePrePrepare(key1, 0n, 1n, staleBlock, staleDigest))
+      await network.drainAll()
+
+      expect(p3.consensus.phase).toBe(PBFTPhase.Idle)
+
+      p3.consensus.stop()
+    })
+
+    it('still accepts a correctly-numbered, correctly-linked PRE-PREPARE', async () => {
+      const p4 = createPeer(key4)
+      p4.consensus.start()
+
+      const block = makeBlock(1n, key1)
+      const digest = await computeDigest(block)
+      network.createTransport(key1).send(key4, await makePrePrepare(key1, 0n, 1n, block, digest))
+      await network.drainAll()
+
+      expect(p4.consensus.phase).toBe(PBFTPhase.PrePrepared)
+
+      p4.consensus.stop()
+    })
+  })
+
+  /**
+   * Issue #50's actual repro: a lagging leader's stale proposal doesn't just
+   * get rejected once -- without the PRE-PREPARE-time check, it gets
+   * PREPAREd and COMMITted by every honest node, refused only at apply time,
+   * which triggers a view change; the NEW leader then automatically carries
+   * the very same (now "prepared") stale block forward (`#doViewChange`'s
+   * carry-over) and the cycle repeats forever, once per view -- a permanent
+   * halt, reproduced 3 of 3 times in the issue.
+   */
+  describe('lagging-leader permanent halt (issue #50)', () => {
+    it('a stale re-proposal from a lagging leader does not permanently halt the cluster via view-change carry-over', async () => {
+      // 4 validators, quorum = 3. key1 leader for view 0, key2 for view 1,
+      // key3 for view 2 (round-robin over [key1, key2, key3, key4]).
+      const p1 = createPeer(key1)
+      const p2 = createPeer(key2)
+      const p3 = createPeer(key3)
+      const p4 = createPeer(key4)
+      const peers = { p1, p2, p3, p4 }
+
+      const finalized: Record<'p1' | 'p2' | 'p3' | 'p4', Block[]> = { p1: [], p2: [], p3: [], p4: [] }
+      for (const [id, p] of Object.entries(peers) as ['p1' | 'p2' | 'p3' | 'p4', typeof p1][]) {
+        p.consensus.onBlockFinalized((block) => finalized[id].push(block))
+      }
+      for (const p of Object.values(peers)) p.consensus.start()
+
+      // Block 1, normally.
+      const block1 = makeBlock(1n, key1)
+      await p1.consensus.propose(block1)
+      await network.drainAll()
+      for (const id of ['p1', 'p2', 'p3', 'p4'] as const) {
+        expect(finalized[id], id).toHaveLength(1)
+      }
+
+      // Force a view change to view 1 (key2's turn) via a genuine
+      // VIEW-CHANGE quorum, delivered to every peer -- the ordinary trigger
+      // for a view change (the prior leader went quiet), without needing a
+      // live timer.
+      for (const target of [key1, key2, key3, key4]) {
+        for (const key of [key1, key3, key4]) { // 3 distinct senders = quorum
+          network.createTransport(key).send(target, await makeViewChange(key, 1n, 1n))
+        }
+      }
+      await network.drainAll()
+      for (const p of Object.values(peers)) expect(p.consensus.currentView).toBe(1n)
+
+      // key2, now the view-1 leader, is the lagging leader: it (or whatever
+      // sent on its behalf, correctly signed either way) proposes sequence 2
+      // numbered 1 again -- already at-or-behind every peer's actual chain
+      // tip. Before raijin#50, nothing caught this until `#onCommitted`, by
+      // which point every honest peer would already have PREPAREd (and
+      // recorded a prepared certificate for) this exact stale block.
+      const staleBlock = makeBlock(1n, key2)
+      const staleDigest = await computeDigest(staleBlock)
+      for (const target of [key1, key3, key4]) {
+        network.createTransport(key2).send(target, await makePrePrepare(key2, 1n, 2n, staleBlock, staleDigest))
+      }
+      await network.drainAll()
+
+      // The fix's first half: nobody even PREPAREs it, so nobody ever
+      // reaches Prepared (let alone Committed) for it.
+      for (const id of ['p1', 'p3', 'p4'] as const) {
+        expect(peers[id].consensus.phase, id).toBe(PBFTPhase.Idle)
+      }
+
+      // The view-1 timeout fires with nothing pending; force the next view
+      // change (view 2, key3's turn) the same way as above.
+      for (const target of [key1, key2, key3, key4]) {
+        for (const key of [key1, key3, key4]) {
+          network.createTransport(key).send(target, await makeViewChange(key, 2n, 2n))
+        }
+      }
+      await network.drainAll()
+      for (const p of Object.values(peers)) expect(p.consensus.currentView).toBe(2n)
+
+      // The fix's second half: key3 (now leader) must NOT have carried the
+      // stale block forward as a "prepared" re-proposal -- if it had (the
+      // pre-#50 behaviour, or if only the PRE-PREPARE-time check existed but
+      // the carry-over guard did not), it would immediately broadcast the
+      // exact same stale PRE-PREPARE again, and the cycle above would
+      // repeat forever, once per view, exactly as the issue's 3-of-3 repro
+      // describes.
+      for (const id of ['p1', 'p2', 'p4'] as const) {
+        expect(peers[id].consensus.phase, id).toBe(PBFTPhase.Idle)
+      }
+
+      // The cluster is NOT permanently halted: key3 proposes a correctly
+      // numbered block 2 and every peer finalizes it.
+      const block2 = makeBlock(2n, key3)
+      block2.header.parentHash = await blockHash(finalized.p3[0])
+      await p3.consensus.propose(block2)
+      await network.drainAll()
+
+      for (const id of ['p1', 'p2', 'p3', 'p4'] as const) {
+        expect(finalized[id], id).toHaveLength(2)
+        expect(finalized[id][1].header.number).toBe(2n)
+      }
+
+      for (const p of Object.values(peers)) p.consensus.stop()
+    })
+  })
+
+  /**
+   * Issue #50's second half in isolation: even a block that was validly
+   * prepared at the time (so the PRE-PREPARE-time check above didn't and
+   * shouldn't have blocked it) can become stale later -- e.g. this node
+   * catches up past that sequence out of band via a real state sync
+   * (`ValidatorNode.importSyncState` calls `seedFinalized` for exactly this,
+   * see raijin#47/#51) -- without anything clearing the now-obsolete
+   * `#preparedCert`/`#preparedBlock` entry. `#doViewChange`'s carry-over
+   * must re-check staleness itself at carry-over time, not just trust that
+   * a block already reaching a prepared certificate is still current.
+   */
+  describe('view-change carry-over drops an already-stale prepared block (issue #50)', () => {
+    it('does not re-propose a prepared block whose number is at-or-behind the finalized head', async () => {
+      // key1 is leader for view 0.
+      const p1 = createPeer(key1)
+      p1.consensus.start()
+
+      const blockA = makeBlock(1n, key1)
+      const digestA = await computeDigest(blockA)
+      await p1.consensus.propose(blockA) // p1 self-PREPAREs (1 of 3)
+
+      // Reach PREPARE quorum on blockA (view 0, sequence 1) -- p1 is now
+      // Prepared and holds a prepared certificate + block for sequence 1 --
+      // but never reaches a COMMIT quorum, so it's never actually applied.
+      network.createTransport(key3).send(key1, {
+        type: 'prepare', view: 0n, sequence: 1n, digest: digestA, from: key3,
+        signature: await signVote(key3, 'prepare', 0n, 1n, digestA),
+      })
+      network.createTransport(key4).send(key1, {
+        type: 'prepare', view: 0n, sequence: 1n, digest: digestA, from: key4,
+        signature: await signVote(key4, 'prepare', 0n, 1n, digestA),
+      })
+      await network.drainAll()
+      expect(p1.consensus.phase).toBe(PBFTPhase.Prepared)
+
+      // Meanwhile, out of band, p1 learns (e.g. via a real state sync) that
+      // block 1 -- the very sequence it still holds a prepared certificate
+      // for -- is already finalized. Nothing else touches
+      // `#preparedCert`/`#preparedBlock` here; only `#onCommitted` and
+      // `#doViewChange` do, and neither has run.
+      await p1.consensus.seedFinalized(blockA)
+
+      // Force a view change to view 4 -- still key1's turn
+      // (4 % 4 === 0) -- via a genuine VIEW-CHANGE quorum, so p1 becomes
+      // leader again with a now-stale prepared certificate for sequence 1
+      // still sitting in `#preparedCert`/`#preparedBlock`.
+      for (const key of [key2, key3, key4]) {
+        network.createTransport(key).send(key1, await makeViewChange(key, 4n, 1n))
+      }
+      await network.drainAll()
+
+      expect(p1.consensus.currentView).toBe(4n)
+      expect(p1.consensus.isLeader).toBe(true)
+
+      // Before raijin#50's carry-over guard, becoming leader here would
+      // automatically `#reProposeCarried` the stale blockA (number 1,
+      // already at-or-behind the head this node itself now knows about) --
+      // which would set phase to PrePrepared. It must not.
+      expect(p1.consensus.phase).toBe(PBFTPhase.Idle)
+
+      p1.consensus.stop()
+    })
+  })
 })

@@ -223,15 +223,25 @@ export class PBFTConsensus {
   #lastFinalizedNumber = 0n
   #lastFinalizedHash: Uint8Array = new Uint8Array(32)
   /**
-   * The in-progress `applyBlock` call, if any (see `#onCommitted`). Exposed
-   * via `whenIdle` so `ValidatorNode.exportSyncState` can wait for it before
-   * snapshotting the state store — otherwise a peer that calls
-   * `exportSyncState` while this node is mid-`applyBlock` (which mutates the
-   * store one transaction at a time, not atomically — see
-   * `StateMachine.applyBlock`'s own docs) could walk away with a
-   * half-applied state that no block's digest actually commits to (raijin#47).
+   * The in-progress apply-and-finalize sequence for the block that just
+   * reached a COMMIT quorum, if any (see `#onCommitted`/`#finishCommit`).
+   * Exposed via `whenIdle` so `ValidatorNode.exportSyncState` can wait for
+   * it before snapshotting the state store and reading `latestBlock`.
+   *
+   * Deliberately covers more than just the `StateMachine.applyBlock` call:
+   * it spans everything from `applyBlock` (which mutates the store one
+   * transaction at a time, not atomically — see `StateMachine.applyBlock`'s
+   * own docs) through the `onBlockFinalized` notification that sets
+   * `ValidatorNode#latestBlock`. An earlier version tracked only the
+   * `applyBlock` call itself; that left a window, several `await`s wide,
+   * between the store finishing its mutation and `latestBlock` actually
+   * advancing to match, during which `exportSyncState` could observe a
+   * store already reflecting block N+1 paired with a `latestBlock` that
+   * still said N — 25/25 reproductions in raijin#51. Tracking the whole
+   * sequence closes that window: nothing here is considered "idle" until
+   * this node's own bookkeeping and every finalization listener have run.
    */
-  #applyingBlock: Promise<TransactionReceipt[]> | null = null
+  #applyingBlock: Promise<void> | null = null
 
   // ── Timers ──
   #blockTimer: TimerHandle | null = null
@@ -380,19 +390,23 @@ export class PBFTConsensus {
   get running(): boolean { return this.#running }
 
   /**
-   * Resolves once any `applyBlock` this node currently has in flight (see
-   * `#onCommitted`) has settled. `exportSyncState`'s own docs call it "safe
-   * to call at any time, including mid-round" — true for the view/round
+   * Resolves once any apply-and-finalize sequence this node currently has in
+   * flight (see `#onCommitted`/`#finishCommit`, and `#applyingBlock`'s own
+   * docs) has fully settled. `exportSyncState`'s own docs call it "safe to
+   * call at any time, including mid-round" — true for the view/round
    * bookkeeping it snapshots, but the underlying state STORE can still be
    * mid-mutation if a peer asks for a sync while this node is applying its
-   * own pending block one transaction at a time (raijin#47).
+   * own pending block one transaction at a time (raijin#47), and even once
+   * the store settles, `ValidatorNode#latestBlock` doesn't advance to match
+   * until a few `await`s later (raijin#51) — this waits for both.
    * `ValidatorNode.exportSyncState` awaits this before calling the store's
-   * `exportData()`, so a sync never hands out a half-applied state.
+   * `exportData()` and reading `latestBlock`, so a sync never hands out a
+   * store and a `latestBlock` that disagree with each other.
    *
-   * Never rejects, even if the in-flight `applyBlock` itself fails — a
-   * caller waiting only to know "is the mutation over" doesn't need (and
-   * shouldn't have to handle) an error that's already being surfaced to
-   * whatever originally awaited `applyBlock` inside `#onCommitted`.
+   * Never rejects, even if the in-flight sequence itself fails — a caller
+   * waiting only to know "is the mutation over" doesn't need (and shouldn't
+   * have to handle) an error that's already being surfaced to whatever
+   * originally awaited it inside `#onCommitted`.
    */
   async whenIdle(): Promise<void> {
     if (this.#applyingBlock) {
@@ -584,6 +598,27 @@ export class PBFTConsensus {
     // leader silently override an already-prepared one. See #doViewChange.
     const cert = this.#preparedCert.get(msg.sequence.toString())
     if (cert && !equal(cert, digest)) return
+
+    // Validate the proposed BLOCK's own number/parent against this node's
+    // actual chain tip *now*, before PREPAREing it -- not only in
+    // `#onCommitted` right before `applyBlock` (raijin#50). The apply-time
+    // check alone lets a lagging/stale leader's proposal sail through
+    // PRE-PREPARE/PREPARE/COMMIT (every node happily prepares and commits
+    // it, since nothing before `#onCommitted` looked at the block's own
+    // header) and only get refused at the very end, by every node,
+    // simultaneously. That triggers a view change, but the next leader's
+    // NEW-VIEW carries the very same (now-prepared) stale block forward
+    // (see `#doViewChange`'s carry-over, and the guard added there), and
+    // the same refusal repeats forever -- a permanent halt, reproduced 3/3
+    // times in the issue. Checking here instead means a stale proposal is
+    // rejected before a single PREPARE is sent for it, so it never reaches
+    // a prepared certificate in the first place and there is nothing to
+    // carry into the next view. A node that rejects here does not itself
+    // resync -- it simply lets its view timer (untouched by a rejection)
+    // run out and the normal view-change path rotate to the next leader,
+    // the same as if the leader had never proposed at all.
+    if (msg.block.header.number !== this.#lastFinalizedNumber + 1n) return
+    if (!equal(msg.block.header.parentHash, this.#lastFinalizedHash)) return
 
     // Accept the proposal
     this.#pendingBlock = msg.block
@@ -803,16 +838,41 @@ export class PBFTConsensus {
       )
     }
 
-    // Apply block to state machine. Tracked in `#applyingBlock` so
-    // `whenIdle` (used by `ValidatorNode.exportSyncState`) can wait for this
-    // to finish rather than snapshotting the store mid-mutation (raijin#47).
-    this.#applyingBlock = this.#stateMachine.applyBlock(this.#pendingBlock)
-    let receipts: TransactionReceipt[]
+    // Apply-and-finalize is tracked *in full* under `#applyingBlock` --- not
+    // just the `StateMachine.applyBlock` call, but everything through the
+    // `onBlockFinalized` notification below (raijin#51). An earlier version
+    // of this only wrapped the `applyBlock` call itself, on the theory that
+    // once that promise settled the store was in a consistent, fully-applied
+    // state and so safe to snapshot. That's true of the STORE, but
+    // `whenIdle`'s actual job is to make `ValidatorNode.exportSyncState`
+    // safe, and that also reads `ValidatorNode#latestBlock` -- which is only
+    // set once the `onBlockFinalized` handler below runs, several `await`s
+    // *after* `applyBlock` resolves (stateRoot, receiptRoot, `blockHash`). A
+    // caller racing `whenIdle` against those intervening awaits could -- and
+    // in the issue's repro, reliably did, 25/25 -- resume right after
+    // `applyBlock` settles, see a store that already reflects block N+1, and
+    // pair it with a `latestBlock` that still said N. Awaiting the whole
+    // sequence below closes that gap: `whenIdle` cannot return until this
+    // node's own bookkeeping (`#lastFinalizedNumber`/`#lastFinalizedHash`)
+    // and every `onBlockFinalized` listener (including the one that sets
+    // `ValidatorNode#latestBlock`) have already run.
+    const block = this.#pendingBlock
+    this.#applyingBlock = this.#finishCommit(block)
     try {
-      receipts = await this.#applyingBlock
+      await this.#applyingBlock
     } finally {
       this.#applyingBlock = null
     }
+  }
+
+  /**
+   * The apply-through-notify tail of `#onCommitted`, run for the block that
+   * just reached a COMMIT quorum. Split out so the whole sequence -- not
+   * just the `StateMachine.applyBlock` call -- can be tracked as a single
+   * promise under `#applyingBlock` (see its call site above and raijin#51).
+   */
+  async #finishCommit(block: Block): Promise<void> {
+    const receipts = await this.#stateMachine.applyBlock(block)
 
     // The digest agreed upon during PRE-PREPARE/PREPARE/COMMIT was
     // necessarily computed *before* execution (state root/receipt root
@@ -825,8 +885,8 @@ export class PBFTConsensus {
     // to get the next block's parentHash, so the link covers the executed
     // result as well as the proposal) and for fork/convergence detection in
     // the test harness.
-    this.#pendingBlock.header.stateRoot = await this.#stateMachine.stateRoot()
-    this.#pendingBlock.header.receiptRoot = await this.#computeReceiptRoot(receipts)
+    block.header.stateRoot = await this.#stateMachine.stateRoot()
+    block.header.receiptRoot = await this.#computeReceiptRoot(receipts)
 
     // This node has now genuinely observed this exact block applied to its
     // own state, in order, on the right parent -- advance the chain tip the
@@ -836,14 +896,14 @@ export class PBFTConsensus {
     // using the placeholder-zeroed header here would compute a hash the
     // real chain never produces, and the very next block would then fail
     // this same parent-hash check.
-    this.#lastFinalizedNumber = this.#pendingBlock.header.number
-    this.#lastFinalizedHash = await blockHash(this.#pendingBlock)
+    this.#lastFinalizedNumber = block.header.number
+    this.#lastFinalizedHash = await blockHash(block)
 
     const finalizedSequence = this.#sequence
 
     // Notify listeners
     for (const handler of this.#onBlockFinalized) {
-      handler(this.#pendingBlock, receipts)
+      handler(block, receipts)
     }
 
     // Reset for next round
@@ -994,9 +1054,28 @@ export class PBFTConsensus {
       const seqKey = this.#sequence.toString()
       const carriedDigest = this.#preparedCert.get(seqKey)
       const carriedBlock = this.#preparedBlock.get(seqKey)
-      if (carriedDigest && carriedBlock) {
+      // Guard against carrying forward a block that is already
+      // at-or-behind this node's own finalized head (raijin#50). Without
+      // this, a block prepared before it was known to be stale (e.g. from
+      // a lagging leader, in a build predating the PRE-PREPARE-time check
+      // above) keeps getting re-proposed by whichever node becomes leader
+      // next, forever: every node still refuses to *apply* it in
+      // `#onCommitted` (its number/parent no longer matches the tip), that
+      // refusal triggers yet another view change, and the next leader
+      // carries forward the exact same stale prepared block again.
+      if (carriedDigest && carriedBlock && carriedBlock.header.number > this.#lastFinalizedNumber) {
         await this.#reProposeCarried(carriedBlock, carriedDigest)
       } else {
+        // Either nothing was prepared for this sequence, or what was
+        // prepared is stale -- drop the stale entry so it can't keep
+        // rejecting a fresh, correctly-numbered proposal at this sequence
+        // via the conflicting-proposal check in `#handlePrePrepare`
+        // (`cert && !equal(cert, digest)`), and start block production
+        // fresh instead.
+        if (carriedDigest || carriedBlock) {
+          this.#preparedCert.delete(seqKey)
+          this.#preparedBlock.delete(seqKey)
+        }
         this.#startBlockTimer()
       }
     }

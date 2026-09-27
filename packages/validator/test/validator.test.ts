@@ -345,4 +345,98 @@ describe('ValidatorNode', () => {
       expect(exported.consensus).toBeDefined()
     })
   })
+
+  // Two further gaps found in raijin-validator 0.0.4 (issue #51).
+  describe('sync state import/export (issue #51)', () => {
+    it('importSyncState prunes every pending tx already consumed on-chain, not just the latest block\'s own transactions', async () => {
+      // Alice has four transactions pending in this node's mempool.
+      const tx0 = makeTransfer(alice, bob, 10n, 0n)
+      const tx1 = makeTransfer(alice, bob, 10n, 1n)
+      const tx2 = makeTransfer(alice, bob, 10n, 2n)
+      const tx3 = makeTransfer(alice, bob, 10n, 3n) // not yet included anywhere
+      for (const tx of [tx0, tx1, tx2, tx3]) await node.submitTransaction(tx)
+      expect(node.mempool.size).toBe(4)
+
+      // The peer being synced from has already applied all of nonces 0-2 --
+      // across THREE separate blocks this node never saw individually, only
+      // the last of which ("latestBlock") is part of the snapshot. Its
+      // account nonce for alice is now 3.
+      const syncedStore = new InMemoryStateStore()
+      await syncedStore.put(accountKey(alice), encodeAccount({ balance: 9970n, nonce: 3n, reputation: 0n }))
+
+      await node.importSyncState({
+        storeData: syncedStore.exportData(),
+        latestBlock: {
+          header: {
+            number: 3n,
+            parentHash: new Uint8Array(32),
+            stateRoot: new Uint8Array(32),
+            txRoot: new Uint8Array(32),
+            receiptRoot: new Uint8Array(32),
+            timestamp: Date.now(),
+            proposer: alice,
+          },
+          // Only the LATEST block's own transaction is named -- blocks 1
+          // and 2 (which consumed nonces 0 and 1) are unknown to this
+          // snapshot, exactly as in the issue's repro (194 of 196 pending
+          // txs survived an import there for this reason).
+          transactions: [tx2],
+          signatures: [],
+        },
+        consensus: {
+          view: 0n,
+          viewChangeJustification: [],
+          sequence: 3n,
+          prePrepare: null,
+          prepares: [],
+          commits: [],
+        },
+      })
+
+      // Before raijin#51's fix, only tx2 (named by latestBlock) would have
+      // been pruned -- tx0 and tx1 (consumed by earlier, unseen blocks)
+      // would still be sitting in the mempool, stale forever.
+      expect(node.mempool.has(tx0), 'nonce 0, already consumed').toBe(false)
+      expect(node.mempool.has(tx1), 'nonce 1, already consumed').toBe(false)
+      expect(node.mempool.has(tx2), 'nonce 2, named by latestBlock').toBe(false)
+      // Nonce 3 has NOT been consumed yet -- it must survive the prune.
+      expect(node.mempool.has(tx3), 'nonce 3, not yet included').toBe(true)
+      expect(node.mempool.size).toBe(1)
+    })
+
+    it('exportSyncState never returns a store that is ahead of latestBlock, even when the finalize notification is delayed', async () => {
+      // Delay `stateRoot()` -- the step in the consensus engine's
+      // post-`applyBlock` finalize sequence that runs AFTER the store is
+      // fully mutated but BEFORE `latestBlock` is updated (via the
+      // `onBlockFinalized` notification `ValidatorNode` uses to advance it).
+      // Before raijin#51, `whenIdle` only tracked the `applyBlock` promise
+      // itself, so a racing `exportSyncState` could resume in exactly this
+      // window: the store already reflects the new block, `latestBlock`
+      // still names the old one -- 25 of 25 reproductions in the issue.
+      const originalStateRoot = node.stateMachine.stateRoot.bind(node.stateMachine)
+      let release: (() => void) | null = null
+      const held = new Promise<void>((resolve) => { release = resolve })
+      node.stateMachine.stateRoot = () => held.then(() => originalStateRoot())
+
+      await node.submitTransaction(makeTransfer(alice, bob, 100n, 0n))
+      const producePromise = node.blockProducer.produceBlock()
+
+      // Let the round get all the way past `applyBlock` and get stuck on
+      // the patched `stateRoot()`.
+      for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0))
+
+      let exported: Awaited<ReturnType<ValidatorNode['exportSyncState']>> | null = null
+      const exportPromise = node.exportSyncState().then((r) => { exported = r })
+      for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0))
+      expect(exported, 'exportSyncState resolved before the block finished finalizing').toBeNull()
+
+      release!()
+      await producePromise
+      await exportPromise
+
+      expect(exported).not.toBeNull()
+      expect(exported!.latestBlock, 'latestBlock must already reflect the block whose state the store export carries').not.toBeNull()
+      expect(exported!.latestBlock!.header.number).toBe(1n)
+    })
+  })
 })
