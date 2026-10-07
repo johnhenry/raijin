@@ -22,6 +22,9 @@ export type {
   CommitMessage,
   ViewChangeMessage,
   NewViewMessage,
+  TxGossipMessage,
+  GenesisRequestMessage,
+  GenesisResponseMessage,
   ConsensusSyncState,
 } from './types.js'
 
@@ -29,3 +32,6 @@ export { PBFTPhase } from './types.js'
 
 export { voteDigest, NO_BLOCK_DIGEST } from './vote.js'
 export type { VotePhase, Vote } from './vote.js'
+
+export { encodeConsensusMessage, decodeConsensusMessage, codecTransport } from './wire.js'
+export type { BytesTransport, CodecTransportOptions } from './wire.js'

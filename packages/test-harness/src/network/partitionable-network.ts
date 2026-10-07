@@ -6,10 +6,16 @@
  * peer handlers stay registered; only message delivery is blocked.
  */
 
-import type { NetworkTransport, ConsensusMessage } from '@johnhenry/raijin-consensus'
+import {
+  codecTransport,
+  decodeConsensusMessage,
+  type NetworkTransport,
+  type ConsensusMessage,
+  type BytesTransport,
+} from '@johnhenry/raijin-consensus'
 import { SeededPRNG } from './seeded-prng.js'
 
-type Handler = (from: Uint8Array, msg: ConsensusMessage) => Promise<void> | void
+type Handler = (from: Uint8Array, bytes: Uint8Array) => Promise<void> | void
 
 /** How `PartitionableNetwork.deliver()` chooses among ready messages. */
 export type DeliveryOrder = 'fifo' | 'random'
@@ -25,7 +31,8 @@ interface QueueItem {
   from: Uint8Array
   fromHex: string
   to: string
-  msg: ConsensusMessage
+  /** Wire bytes: the network only ever moves bytes (see `createBytesTransport`). */
+  bytes: Uint8Array
   deliverAfter: number  // 0 = immediate, >0 = delayed until this timestamp
 }
 
@@ -33,22 +40,12 @@ function toHex(data: Uint8Array): string {
   return Array.from(data).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
-// JSON bigint/Uint8Array helpers for deep-cloning messages
-function replacer(_key: string, value: unknown): unknown {
-  if (typeof value === 'bigint') return { __bigint: value.toString() }
-  if (value instanceof Uint8Array) return { __uint8array: Array.from(value) }
-  return value
-}
-function reviver(_key: string, value: unknown): unknown {
-  if (value && typeof value === 'object') {
-    const v = value as Record<string, unknown>
-    if ('__bigint' in v) return BigInt(v.__bigint as string)
-    if ('__uint8array' in v) return new Uint8Array(v.__uint8array as number[])
+function peekType(bytes: Uint8Array): ConsensusMessage['type'] | 'undecodable' {
+  try {
+    return decodeConsensusMessage(bytes).type
+  } catch {
+    return 'undecodable' as never
   }
-  return value
-}
-function cloneMsg(msg: ConsensusMessage): ConsensusMessage {
-  return JSON.parse(JSON.stringify(msg, replacer), reviver)
 }
 
 export class PartitionableNetwork {
@@ -100,35 +97,49 @@ export class PartitionableNetwork {
     return this.#deliveryLog
   }
 
-  /** Create a transport for a peer */
-  createTransport(peerId: Uint8Array): NetworkTransport {
-    const peerHex = toHex(peerId)
+  /** Total bytes enqueued so far (proof that messages crossed as bytes). */
+  bytesEnqueued = 0
 
-    const transport: NetworkTransport = {
-      broadcast: (msg: ConsensusMessage) => {
+  /**
+   * Create the byte-level transport for a peer. This is all the network is:
+   * it moves opaque `Uint8Array`s, exactly like a socket would, so every
+   * scenario run on it exercises the wire codec.
+   */
+  createBytesTransport(peerId: Uint8Array): BytesTransport {
+    const peerHex = toHex(peerId)
+    return {
+      broadcast: (bytes) => {
         if (this.#disconnected.has(peerHex)) return
         for (const [id] of this.#peers) {
           if (id !== peerHex && !this.#disconnected.has(id)) {
-            this.#enqueue(peerId, peerHex, id, msg)
+            this.#enqueue(peerId, peerHex, id, bytes)
           }
         }
       },
-      send: (to: Uint8Array, msg: ConsensusMessage) => {
+      send: (to, bytes) => {
         if (this.#disconnected.has(peerHex)) return
         const toHexStr = toHex(to)
         if (!this.#disconnected.has(toHexStr)) {
-          this.#enqueue(peerId, peerHex, toHexStr, msg)
+          this.#enqueue(peerId, peerHex, toHexStr, bytes)
         }
       },
-      onMessage: (handler: (from: Uint8Array, msg: ConsensusMessage) => void) => {
+      onMessage: (handler) => {
         this.#peers.set(peerHex, handler)
       },
     }
-
-    return transport
   }
 
-  #enqueue(from: Uint8Array, fromHex: string, toHex: string, msg: ConsensusMessage): void {
+  /** Put arbitrary raw bytes on the wire from `from` to `to` (hostile/garbage-payload tests). */
+  injectRaw(from: Uint8Array, to: Uint8Array, bytes: Uint8Array): void {
+    this.#enqueue(from, toHex(from), toHex(to), bytes)
+  }
+
+  /** Create a transport for a peer: the byte transport behind `codecTransport`. */
+  createTransport(peerId: Uint8Array): NetworkTransport {
+    return codecTransport(this.createBytesTransport(peerId))
+  }
+
+  #enqueue(from: Uint8Array, fromHex: string, toHex: string, bytes: Uint8Array): void {
     const edgeKey = `${fromHex}:${toHex}`
 
     // Check drop rate
@@ -139,11 +150,12 @@ export class PartitionableNetwork {
     const delay = this.#delays.get(edgeKey) ?? 0
     const deliverAfter = delay > 0 ? this.#now + delay : 0
 
+    this.bytesEnqueued += bytes.length
     this.#queue.push({
       from,
       fromHex,
       to: toHex,
-      msg: cloneMsg(msg),
+      bytes: bytes.slice(), // a copy: sender and receiver never share memory
       deliverAfter,
     })
   }
@@ -189,12 +201,12 @@ export class PartitionableNetwork {
     this.#deliveryLog.push({
       from: item.fromHex,
       to: item.to,
-      type: item.msg.type,
+      type: peekType(item.bytes),
     })
 
     const handler = this.#peers.get(item.to)
     if (handler) {
-      await handler(item.from, item.msg)
+      await handler(item.from, item.bytes)
     }
     return true
   }

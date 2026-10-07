@@ -10,6 +10,7 @@ import type {
   StateStore,
   SignatureVerifier,
   GenesisConfig,
+  KVBackend,
 } from '@johnhenry/raijin-core'
 import {
   StateMachine,
@@ -23,6 +24,8 @@ import {
   createGenesisBlock,
   applyGenesisState,
   blockHash,
+  encodeMessage,
+  decodeMessage,
 } from '@johnhenry/raijin-core'
 import {
   PBFTConsensus,
@@ -97,6 +100,44 @@ export interface ValidatorNodeConfig {
   maxTxPerBlock?: number
   /** Maximum mempool size. Default: 4096. */
   maxMempoolSize?: number
+  /**
+   * Durable chain-tip record so a restarted validator resumes from its last
+   * committed block instead of genesis (pair it with a durable `store` such
+   * as `PersistentStateStore`). See `CheckpointStore`.
+   */
+  checkpoint?: CheckpointStore
+}
+
+/**
+ * Where a validator persists its consensus-side resume point: the last
+ * finalized block (plus the view it was finalized in). One opaque record,
+ * overwritten on every finalized block.
+ *
+ * Use a storage location SEPARATE from the state store's (a different
+ * IndexedDB database, file, ...) -- sharing a key space with state would put
+ * the record inside the state root.
+ *
+ * Crash ordering: a block's transactions reach the state store before the
+ * checkpoint is written, so after a crash the store may be one block AHEAD of
+ * the checkpoint (never behind). On start, a checkpoint whose block's
+ * `stateRoot` does not match the store is rejected loudly; recover with
+ * `syncFrom`/`importSyncState` from a peer rather than guessing.
+ */
+export interface CheckpointStore {
+  load(): Promise<Uint8Array | null>
+  save(record: Uint8Array): Promise<void>
+}
+
+/** A `CheckpointStore` over any `KVBackend` (e.g. `IndexedDbKVBackend`), under one key. */
+export function kvCheckpointStore(backend: KVBackend, key = 'checkpoint'): CheckpointStore {
+  return {
+    async load() {
+      return (await backend.loadAll()).get(key) ?? null
+    },
+    async save(record) {
+      await backend.write({ puts: [[key, record]], deletes: [] })
+    },
+  }
 }
 
 export interface GossipConfig {
@@ -186,6 +227,9 @@ export class ValidatorNode {
   #seen = new Set<string>()
   #inflightGossip = 0
 
+  /** Last failed `checkpoint.save` (surfaced via `checkpointError`). */
+  #checkpointError: unknown = null
+
   // Genesis
   #genesis: GenesisConfig | null = null
   #genesisBlock: Block | null = null
@@ -274,7 +318,13 @@ export class ValidatorNode {
       )
     } else {
       this.#initConsensus(validators)
-      this.#ready = Promise.resolve()
+      if (config.checkpoint) {
+        this.#genesisApplied = false
+        this.#ready = this.#restoreCheckpoint()
+        this.#ready.catch(() => {})
+      } else {
+        this.#ready = Promise.resolve()
+      }
     }
   }
 
@@ -362,6 +412,34 @@ export class ValidatorNode {
     this.#genesisBlock = block
     await this.#blockProducer!.advance(block)
     await this.#consensus!.seedFinalized(block)
+    await this.#restoreCheckpoint()
+    this.#genesisApplied = true
+  }
+
+  /**
+   * Resume from the persisted chain tip, if a `checkpoint` store is
+   * configured and holds one. Refuses a checkpoint that disagrees with the
+   * state store (see `CheckpointStore`).
+   */
+  async #restoreCheckpoint(): Promise<void> {
+    const cp = this.#config.checkpoint
+    if (!cp) return
+    const bytes = await cp.load()
+    if (bytes) {
+      const rec = decodeMessage<{ latestBlock: Block }>(bytes)
+      const block = rec.latestBlock
+      const storeRoot = await this.#store.root()
+      if (!equal(storeRoot, block.header.stateRoot)) {
+        throw new Error(
+          `ValidatorNode: checkpoint (block ${block.header.number}) does not match the state store `
+          + `(root ${toHex(storeRoot)}, checkpoint expects ${toHex(block.header.stateRoot)}); `
+          + 'the store and checkpoint diverged (crash between writes, or mismatched storage) -- resync from a peer',
+        )
+      }
+      this.#latestBlock = block
+      await this.#need(this.#blockProducer).advance(block)
+      await this.#need(this.#consensus).seedFinalized(block)
+    }
     this.#genesisApplied = true
   }
 
@@ -568,6 +646,11 @@ export class ValidatorNode {
     return this.#latestBlock
   }
 
+  /** The most recent `checkpoint.save` failure, if any (finalization continues regardless). */
+  get checkpointError(): unknown {
+    return this.#checkpointError
+  }
+
   /** Whether the node is running. */
   get running(): boolean {
     return this.#running
@@ -649,6 +732,9 @@ export class ValidatorNode {
       )
     }
     this.#store.importData(state.storeData)
+    // A durable store writes imported data in the background; make it durable
+    // before adopting the rest of the state.
+    await (this.#store as { flush?: () => Promise<void> }).flush?.()
 
     if (state.latestBlock) {
       this.#latestBlock = state.latestBlock
@@ -717,6 +803,17 @@ export class ValidatorNode {
 
   async #onFinalized(block: Block, receipts: TransactionReceipt[]): Promise<void> {
     this.#latestBlock = block
+
+    // Persist the resume point before anything else observes the block.
+    if (this.#config.checkpoint) {
+      try {
+        await this.#config.checkpoint.save(
+          encodeMessage({ latestBlock: block, view: this.#consensus ? this.#consensus.exportSyncState().view : 0n }),
+        )
+      } catch (e) {
+        this.#checkpointError = e
+      }
+    }
 
     // Remove included transactions from the mempool
     this.#mempool.removeBatch(block.transactions)

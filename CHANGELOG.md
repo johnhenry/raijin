@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3.0 (2026-10-06)
+
+**Wire codec (#56) and durable state (#55).** No breaking changes.
+
+**`@johnhenry/raijin-core`** `0.1.0` -> `0.2.0`
+
+- New canonical wire codec `encodeMessage(value): Uint8Array` / `decodeMessage(bytes)` / `WireFormatError`
+  (`packages/core/src/codec.ts`): tagged binary, round-trips `null`, booleans, numbers, `bigint`,
+  strings, `Uint8Array`, arrays and objects; one encoding per value; strict decoder (truncation, trailing
+  bytes, non-minimal ints, unsorted keys, bad UTF-8, depth > 64 all rejected). Byte-level spec in the core README.
+- New durable state: `PersistentStateStore` (write-through, root-equivalent to `InMemoryStateStore`,
+  `SyncableStateStore`, `flush()`), `KVBackend`, `IndexedDbKVBackend`, `MemoryKVBackend`, and
+  `checkStateStoreConformance` for third-party stores.
+- Docs: `verifyEd25519` throws `TypeError` on a non-32-byte public key (behaviour since 0.1.0) is now called out explicitly.
+
+**`@johnhenry/raijin-consensus`** `0.1.0` -> `0.2.0`
+
+- New `BytesTransport` contract, `codecTransport(inner)` (adapts a bytes-only transport to `NetworkTransport`;
+  undecodable payloads are dropped), `encodeConsensusMessage` / `decodeConsensusMessage` (codec + shape check).
+  Exports `TxGossipMessage`, `GenesisRequestMessage`, `GenesisResponseMessage`. Documented `NetworkTransport` contract.
+  Existing object-passing transports are unchanged.
+
+**`@johnhenry/raijin-validator`** `0.1.0` -> `0.2.0`
+
+- New `checkpoint` option (`CheckpointStore`, `kvCheckpointStore`): a restarted validator resumes from its
+  last committed block, refusing a checkpoint that disagrees with the store. `importSyncState` flushes durable stores.
+
+**`@johnhenry/raijin-sdk`** `0.0.2` -> `0.1.0`: re-exports `encodeMessage` / `decodeMessage` / `WireFormatError`.
+
+**`@johnhenry/raijin-mempool`** `0.1.0` -> `0.1.1`, **`@johnhenry/raijin-da`** `0.0.3` -> `0.0.4`: core dependency
+range widened to `>=0.1.0 <0.3.0` (no code change) so one copy of core is installed.
+
+**Test harness**: the in-memory network now moves bytes only (every scenario goes through the codec); new
+`wire-bytes` and `persistence` suites.
+
 ## 0.2.0 (2026-10-06)
 
 **BREAKING: Ed25519 / `SignatureVerifier` argument order flipped to WebCrypto's order.**

@@ -55,7 +55,7 @@ Failed transactions do not throw — they return `status: 'revert'` receipts wit
 | `Account` | `{ balance: bigint, nonce: bigint, reputation: bigint }` |
 | `TransactionReceipt` | `{ txHash, status, revertReason?, index }` |
 | `TransactionType` | enum: `Transfer = 0x01` … `EscrowRefund = 0x0f` (15 values; most are placeholders, see above) |
-| `StateStore` | interface: `get/put/delete/root/snapshot/revert` — implement over IndexedDB, OPFS, … |
+| `StateStore` | interface: `get/put/delete/root/snapshot/revert` — see [Durable state](#durable-state--persistentstatestore-kvbackend-indexeddbkvbackend-memorykvbackend-checkstatestoreconformance) for IndexedDB-backed persistence |
 | `StateSnapshot` | `{ id: number }` |
 | `SignatureVerifier` | `{ verify(publicKey, signature, message): Promise<boolean> }` (WebCrypto order; **changed in 0.1.0**) |
 | `TransactionSigner` | `{ publicKey, sign(message): Promise<Uint8Array> }` |
@@ -139,7 +139,60 @@ signEd25519(privateKey: CryptoKey | Uint8Array /* 32-byte seed */, message: Uint
 ed25519Verifier: SignatureVerifier   // { verify: verifyEd25519 } — what `identity.verify` / `PBFTConfig.verify` want
 ```
 
+> **Throws on a bad public key.** `verifyEd25519` throws a `TypeError` (it does not return `false`) when `publicKey` is not a 32-byte `Uint8Array`. This changed in 0.1.0 along with the argument order, to catch swapped call sites. Every other failure (wrong, truncated or garbled signature; unusable key bytes of the right length) returns `false`. Wrap the call if a malformed key is attacker-controlled input you want to treat as "invalid" rather than as an exception.
+
 **BREAKING in 0.1.0.** `verifyEd25519` used to be `(message, signature, publicKey)`. `ed25519Verifier` and the `SignatureVerifier` interface flipped with it, so a custom verifier you inject into `StateMachine`, `PBFTConsensus` or `ValidatorNode` must now take `(publicKey, signature, message)`. A swapped call no longer returns `false` silently: a public key is always 32 bytes, so `verifyEd25519` throws a `TypeError` naming the new order when `publicKey` is not a 32-byte `Uint8Array`. (A custom verifier that ignores its arguments is unaffected; one that reads them positionally is not — and the compiler will not catch a `(Uint8Array, Uint8Array, Uint8Array)` signature in plain JS.) The same order is used across raijin, wsh and browsermesh. `verifyEd25519` returns `false` (never throws) for a wrong/garbled signature; `signEd25519` throws on bad input.
+
+### Wire codec — `encodeMessage`, `decodeMessage`, `WireFormatError`
+
+Consensus messages, `tx-gossip` messages, genesis payloads, transactions and blocks carry `bigint` and `Uint8Array`, which `JSON.stringify` throws on or mangles. `encodeMessage(value): Uint8Array` / `decodeMessage(bytes): value` is a small, dependency-free, **canonical** binary format that round-trips `null`, booleans, numbers, `bigint`, strings, `Uint8Array`, arrays and plain objects. Canonical means one value has exactly one encoding (so the bytes can be hashed, signed or compared), and `decodeMessage` throws `WireFormatError` on anything that is not that encoding: truncation, trailing bytes, unknown version or tag, non-minimal integers, unsorted or duplicate object keys, invalid UTF-8, nesting deeper than 64. Decoded `Uint8Array`s are copies, never views into the input.
+
+`undefined` object properties are omitted (like JSON); `undefined` elsewhere, functions, symbols, `Map`/`Set`/`Date`/class instances and lone surrogates throw `TypeError` on encode. `@johnhenry/raijin-consensus` adds typed `encodeConsensusMessage`/`decodeConsensusMessage` and `codecTransport` on top; `@johnhenry/raijin-sdk` re-exports `encodeMessage`/`decodeMessage`.
+
+**Format spec (version 1)** — implement this in any language:
+
+```
+message = 0x01 || value                       ; 0x01 = format version
+value   = tag(1 byte) || body
+u32     = unsigned 32-bit, big-endian
+
+tag  type            body
+0x00 null            (empty)
+0x01 false           (empty)
+0x02 true            (empty)
+0x03 bigint >= 0     u32 n || n bytes: big-endian magnitude, minimal (no leading 0x00); 0n is n = 0
+0x04 bigint <  0     same body, holding the magnitude |v| (n = 0 is invalid: no negative zero)
+0x05 number          8 bytes: IEEE-754 binary64, big-endian. Every NaN is 7ff8000000000000. -0 is kept.
+0x06 string          u32 n || n bytes of well-formed UTF-8
+0x07 bytes           u32 n || n raw bytes
+0x08 array           u32 n || n values
+0x09 object          u32 n || n x ( u32 klen || key UTF-8 || value ), keys strictly ascending by
+                     their UTF-8 bytes (bytewise, unsigned), no duplicates
+```
+
+Examples (hex): `null` = `0100`; `true` = `0102`; `0n` = `010300000000`; `256n` = `0103000000020100`; `-1n` = `01040000000101`; `"hi"` = `0106000000026869`; `Uint8Array[0xab]` = `010700000001ab`; `1` (number) = `01053ff0000000000000`; `{a: 1n}` = `0109000000010000000161` `0300000001` `01`. `1` the number, `1n` the bigint and `"1"` the string encode differently, so types are preserved exactly. A receiver must still validate the *shape* of what it decodes (`decodeConsensusMessage` does this for consensus messages); the codec only guarantees well-formed, canonical values.
+
+### Durable state — `PersistentStateStore`, `KVBackend`, `IndexedDbKVBackend`, `MemoryKVBackend`, `checkStateStoreConformance`
+
+`InMemoryStateStore` loses everything on a reload. `PersistentStateStore` is a `StateStore` + `SyncableStateStore` that keeps the working set in memory (so `root()`, `snapshot()` and `revert()` are exactly the in-memory ones, and roots are identical by construction) and writes every change through to a `KVBackend`:
+
+```ts
+interface KVBackend {
+  loadAll(): Promise<Map<string, Uint8Array>>   // hex(key) -> value
+  write(batch: { puts: [string, Uint8Array][]; deletes: string[] }): Promise<void>  // MUST be atomic
+  close?(): void | Promise<void>
+}
+
+const store = await PersistentStateStore.open(new IndexedDbKVBackend({ name: 'my-chain-state' }))
+```
+
+- `put`/`delete`/`revert` resolve only once the change is durable; a failed backend write rejects the call and leaves memory unchanged, so memory is never ahead of disk. Writes are serialised.
+- `importData` (state sync) is synchronous by contract, so its disk write runs in the background: `await store.flush()` for durability; a failure rejects `flush()` (or the next `put`/`delete`). `ValidatorNode.importSyncState` flushes for you.
+- Snapshots are in-memory only (rollback within a block, not across restarts).
+- `IndexedDbKVBackend` (browser) uses one object store and one readwrite transaction per batch. It has been exercised against an in-process IndexedDB double in tests, not a real browser. An OPFS backend or a Node file backend is just another `KVBackend` (about 40 lines).
+- `checkStateStoreConformance({ create, reopen? })` throws unless a store is root-equivalent to `InMemoryStateStore` (empty, after put/overwrite/delete, snapshot/revert including nested, after a real `StateMachine` transfer) and, with `reopen`, survives a restart. Run it from any test runner against your own `StateStore`.
+
+To resume a *validator* (not just state) after a restart, also pass `checkpoint` to `ValidatorNode`; see `@johnhenry/raijin-validator`.
 
 ### Genesis — `GenesisConfig`, `createGenesisBlock`, `genesisHash`, `applyGenesisState`, `assertGenesisMatches`
 

@@ -88,6 +88,10 @@ interface ClientTransport {
 
 For tests and demos, back it directly with a `ValidatorNode`: `getAccount` → `node.stateMachine.getAccount`, `submitTransaction` → `node.submitTransaction` + match the receipt by `hash(encodeTxSigned(tx))` in `onBlockFinalized`.
 
+## Wire codec
+
+`encodeMessage(value): Uint8Array` / `decodeMessage(bytes)` (re-exported from `@johnhenry/raijin-core`) serialise transactions, blocks and receipts (anything with `bigint`/`Uint8Array`) canonically for any byte transport. The byte-level spec is in the core README. A `ClientTransport` that talks to a remote node can send `encodeMessage(tx)` instead of inventing a JSON replacer.
+
 ## Correlating submissions with receipts
 
 Receipts identify transactions by `txHash = hash(encodeTxSigned(tx))` — the hash of the *signed* canonical encoding. It is the same identifier the block's `txRoot` leaves and the mempool's dedup key use, so there is one transaction id, not two. (`node.submitTransaction(tx)` returns that same hash as hex.) To match your own submission inside a block-finalized callback:
