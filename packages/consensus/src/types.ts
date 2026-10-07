@@ -2,7 +2,7 @@
  * Consensus types for Raijin PBFT.
  */
 
-import type { Block } from '@johnhenry/raijin-core'
+import type { Block, Transaction, GenesisConfig } from '@johnhenry/raijin-core'
 
 // ── Network transport interface ───────────────────────────────────────
 
@@ -33,6 +33,36 @@ export type ConsensusMessage =
   | CommitMessage
   | ViewChangeMessage
   | NewViewMessage
+  | TxGossipMessage
+  | GenesisRequestMessage
+  | GenesisResponseMessage
+
+/**
+ * Not a consensus vote: a transaction relayed between validators so one
+ * submitted to a follower reaches the leader's mempool (see
+ * `ValidatorNode`'s `gossip` option). `PBFTConsensus` ignores it; it rides
+ * the same `NetworkTransport` so no second channel is needed.
+ */
+export interface TxGossipMessage {
+  type: 'tx-gossip'
+  tx: Transaction
+  /** Hops travelled so far (the originating node sends 1). */
+  hops: number
+}
+
+/** Ask peers for their genesis config (see `ValidatorNode.fetchGenesis`). */
+export interface GenesisRequestMessage {
+  type: 'genesis-request'
+}
+
+/**
+ * A peer's genesis config. Untrusted until it hashes to the out-of-band
+ * expected genesis hash.
+ */
+export interface GenesisResponseMessage {
+  type: 'genesis-response'
+  genesis: GenesisConfig
+}
 
 export interface PrePrepareMessage {
   type: 'pre-prepare'

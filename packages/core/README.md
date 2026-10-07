@@ -57,7 +57,7 @@ Failed transactions do not throw — they return `status: 'revert'` receipts wit
 | `TransactionType` | enum: `Transfer = 0x01` … `EscrowRefund = 0x0f` (15 values; most are placeholders, see above) |
 | `StateStore` | interface: `get/put/delete/root/snapshot/revert` — implement over IndexedDB, OPFS, … |
 | `StateSnapshot` | `{ id: number }` |
-| `SignatureVerifier` | `{ verify(message, signature, publicKey): Promise<boolean> }` |
+| `SignatureVerifier` | `{ verify(publicKey, signature, message): Promise<boolean> }` (WebCrypto order; **changed in 0.1.0**) |
 | `TransactionSigner` | `{ publicKey, sign(message): Promise<Uint8Array> }` |
 
 ### `StateMachine`
@@ -128,6 +128,22 @@ await store.put(
 ```
 
 Do this identically on every node (before `start()`), or their state roots diverge from block one.
+
+### Signatures — `verifyEd25519`, `signEd25519`, `ed25519Verifier`
+
+Argument order is WebCrypto's: key first, message last.
+
+```ts
+verifyEd25519(publicKey: Uint8Array, signature: Uint8Array, message: Uint8Array): Promise<boolean>
+signEd25519(privateKey: CryptoKey | Uint8Array /* 32-byte seed */, message: Uint8Array): Promise<Uint8Array>
+ed25519Verifier: SignatureVerifier   // { verify: verifyEd25519 } — what `identity.verify` / `PBFTConfig.verify` want
+```
+
+**BREAKING in 0.1.0.** `verifyEd25519` used to be `(message, signature, publicKey)`. `ed25519Verifier` and the `SignatureVerifier` interface flipped with it, so a custom verifier you inject into `StateMachine`, `PBFTConsensus` or `ValidatorNode` must now take `(publicKey, signature, message)`. A swapped call no longer returns `false` silently: a public key is always 32 bytes, so `verifyEd25519` throws a `TypeError` naming the new order when `publicKey` is not a 32-byte `Uint8Array`. (A custom verifier that ignores its arguments is unaffected; one that reads them positionally is not — and the compiler will not catch a `(Uint8Array, Uint8Array, Uint8Array)` signature in plain JS.) The same order is used across raijin, wsh and browsermesh. `verifyEd25519` returns `false` (never throws) for a wrong/garbled signature; `signEd25519` throws on bad input.
+
+### Genesis — `GenesisConfig`, `createGenesisBlock`, `genesisHash`, `applyGenesisState`, `assertGenesisMatches`
+
+A `GenesisConfig` (`chainId`, ordered `validators`, optional initial `accounts`, optional `timestamp`, default 0) deterministically derives block 0: number 0, zero parent, `stateRoot` = root of the genesis accounts, `txRoot` = a commitment to the chain id and ordered validator set. Equal configs give equal `genesisHash`; any difference (chain id, a validator or their order, a balance, the timestamp) gives a different one. **Trust model:** genesis is not discovered trustlessly — a node is told the config, or at least the expected hash, out of band. See `@johnhenry/raijin-validator` for `genesis`/`genesisHash`/`fetchGenesis`.
 
 ### Errors
 

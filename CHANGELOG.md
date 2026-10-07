@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.2.0 (2026-10-06)
+
+**BREAKING: Ed25519 / `SignatureVerifier` argument order flipped to WebCrypto's order.**
+`verifyEd25519(message, signature, publicKey)` is now
+`verifyEd25519(publicKey, signature, message)`, `SignatureVerifier.verify` and
+`ed25519Verifier` likewise, and a new `signEd25519(privateKey, message)` matches.
+This is the one order shared by raijin, wsh and browsermesh (issue #58). Any
+custom verifier you inject (`StateMachine`, `PBFTConsensus.verify`,
+`ValidatorNode` `identity.verify`) and any direct `verifyEd25519` call must be
+updated. Guard: because a public key is always 32 bytes, `verifyEd25519` throws
+a `TypeError` naming the new order if `publicKey` is not a 32-byte
+`Uint8Array`, rather than silently returning `false` for a swapped call.
+
+**`@johnhenry/raijin-core`** `0.0.1` -> `0.1.0`
+
+- BREAKING: verify/sign order, as above. Updated call sites: `StateMachine`
+  (`applyTransaction`), `PBFTConsensus` (`#verifyVote`), `ValidatorNode` (mempool
+  verifier), the consensus test `mockVerifier`, the test-harness verifier type,
+  `examples/07-sdk-end-to-end.mjs`, the sdk wallet test.
+- New `signEd25519(privateKey, message)` (accepts a `CryptoKey` or a raw 32-byte seed).
+- New first-class genesis: `GenesisConfig`, `createGenesisBlock`, `genesisHash`,
+  `applyGenesisState`, `assertGenesisMatches`, `Domain.Genesis`.
+
+**`@johnhenry/raijin-validator`** `0.0.6` -> `0.1.0`
+
+- **Issue #57 -- transaction gossip.** `submitTransaction` now relays the tx to
+  the other validators over the existing transport (default on:
+  `gossip: { enabled?, fanout?, maxHops? }`), with dedupe by signed-tx hash,
+  a hop limit, and backpressure (`Mempool.hasCapacityFor`, an in-flight
+  verification cap, stale-nonce check). A tx submitted to a follower is now
+  proposed by the leader.
+- **Genesis.** `genesis` / `genesisHash` config, `ready()`, `ValidatorNode.create`,
+  `fetchGenesis()`, `genesisBlock`. A node pinned to a `genesisHash` that its
+  genesis does not match refuses to run. The trust anchor is the out-of-band
+  hash; there is no trustless bootstrap.
+- BREAKING: `identity.verify` argument order (see above).
+
+**`@johnhenry/raijin-consensus`** `0.0.6` -> `0.1.0`
+
+- BREAKING: `PBFTConfig.verify` argument order (see above).
+- New wire message types `tx-gossip`, `genesis-request`, `genesis-response`
+  (ignored by `PBFTConsensus`); `seedFinalized` now accepts block 0 so a
+  genesis-parented first block passes the parent-hash guard.
+
+**`@johnhenry/raijin-mempool`** `0.0.3` -> `0.1.0`: `hasCapacityFor(tx)`.
+
+**`@johnhenry/raijin-da`** `0.0.2` -> `0.0.3`, **`@johnhenry/raijin-sdk`** `0.0.1` -> `0.0.2`:
+dependency on core `^0.1.0`.
+
 ## 0.0.7 (2026-09-27)
 
 Follow-up to #48/#50/#51 (below), reported the same day, verifying those

@@ -146,6 +146,22 @@ export class Mempool {
     return this.#txs.size
   }
 
+  /**
+   * Cheap backpressure check, no signature verification: could `tx` plausibly
+   * be admitted right now? True while the pool has room, or when `tx` pays a
+   * strictly higher fee than the lowest-fee pending transaction (which
+   * `submit` would evict). Lets a caller shed load before paying for a
+   * verify it would just throw away.
+   */
+  hasCapacityFor(tx: Transaction): boolean {
+    if (this.#txs.size < this.#maxSize) return true
+    const incoming = this.#feeExtractor(tx)
+    for (const pooled of this.#txs.values()) {
+      if (this.#feeExtractor(pooled) < incoming) return true
+    }
+    return false
+  }
+
   /** Whether a transaction with the given sender+nonce exists. */
   has(tx: Transaction): boolean {
     return this.#txs.has(txKey(tx))

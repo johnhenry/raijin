@@ -54,6 +54,7 @@ const forBlock = pool.pendingForProposer(100) // top-100 by fee
 | `pending(): Transaction[]` | All transactions, fee-descending, nonce-ascending on ties. |
 | `pendingForProposer(limit?): Transaction[]` | The same ordering, truncated to `limit`. |
 | `has(tx)` / `hasNonce(sender, nonce)` | Membership checks by sender+nonce. |
+| `hasCapacityFor(tx): boolean` | Cheap backpressure check, no signature verification: `true` while there is room, or when `tx` out-bids the lowest pending fee (so `submit` would evict). Added in 0.1.0 for `ValidatorNode` gossip. |
 | `size` | Current count. |
 | `onAccepted(handler)` / `onDropped(handler)` | Event hooks; `onDropped` receives a reason string. |
 
