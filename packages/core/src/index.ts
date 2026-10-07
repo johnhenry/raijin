@@ -30,6 +30,20 @@ export { StateNamespace, stateKey, accountKey } from './state-machine.js'
 // State store
 export { InMemoryStateStore } from './state.js'
 
+// Durable state
+export {
+  PersistentStateStore,
+  MemoryKVBackend,
+  IndexedDbKVBackend,
+} from './persistent-state.js'
+export type { KVBackend, KVBatch, IndexedDbKVBackendOptions } from './persistent-state.js'
+export { checkStateStoreConformance } from './conformance.js'
+export type { StateStoreConformanceOptions } from './conformance.js'
+
+// Wire codec
+export { encodeMessage, decodeMessage, WireFormatError, WIRE_VERSION } from './codec.js'
+export type { WireValue } from './codec.js'
+
 // Hashing
 export { hash, hashString, merkleRoot, equal, toHex, fromHex } from './hash.js'
 

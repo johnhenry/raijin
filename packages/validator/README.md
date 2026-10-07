@@ -86,7 +86,7 @@ Block-production errors inside the timer loop are swallowed by design (not being
 - **Hops:** the originator sends at hop 1; a receiver relays (to everyone except the sender) only while `hops < maxHops`. Default `maxHops: 2`.
 - **Fanout:** default is `transport.broadcast`; with `fanout: k` each round goes to `k` random other validators via `send` (use with larger `maxHops`).
 - **Backpressure:** an inbound tx is dropped before signature verification when the pool is full and it cannot out-bid the lowest-fee pending tx (`Mempool.hasCapacityFor`), when more than 64 verifications are already in flight, or when its nonce is already consumed on-chain. Only txs the mempool actually accepted are relayed. Only validators' gossip is accepted.
-- `enabled: false` restores the old local-only behaviour. All nodes need a transport that carries `bigint`/`Uint8Array` (see below).
+- `enabled: false` restores the old local-only behaviour. All nodes need a transport that carries `bigint`/`Uint8Array`: use `codecTransport` (see below).
 
 #### Genesis
 
@@ -110,13 +110,29 @@ Config: `proposer` (pubkey), `consensus`, `mempool`, optional `maxTxPerBlock` (d
 
 Everything above scales to a real mesh, but four things change:
 
-1. **The transport becomes real.** Every node's `transport.broadcast`/`send` must reach every other validator, and `onMessage` reports the sender's public key as `from`. Consensus no longer *trusts* that value — every vote's signature is verified against it, so a transport that lies about `from` produces messages that fail verification and are dropped. What the transport still owes you is delivery: nothing here retries or reorders, so a lossy transport costs liveness, not safety. If your wire format is JSON, consensus messages carry `bigint`s and `Uint8Array`s; you need a replacer/reviver pair (`packages/consensus/test/helpers.ts` has a working one).
+1. **The transport becomes real.** Every node's `transport.broadcast`/`send` must reach every other validator, and `onMessage` reports the sender's public key as `from`. Consensus no longer *trusts* that value — every vote's signature is verified against it, so a transport that lies about `from` produces messages that fail verification and are dropped. What the transport still owes you is delivery: nothing here retries or reorders, so a lossy transport costs liveness, not safety. Consensus, `tx-gossip` and genesis messages carry `bigint`s and `Uint8Array`s, so they cannot be JSON'd. Implement the byte-level `BytesTransport` and wrap it with `codecTransport` from `@johnhenry/raijin-consensus`, which uses the canonical wire codec in `@johnhenry/raijin-core` (no hand-rolled replacer/reviver needed).
 2. **`validators` must be byte-identical on every node** — same keys, same order. Leader election is positional (`view % n`), so a different ordering means nodes disagree about who may propose and nothing ever finalizes, with no error to tell you why.
 3. **Quorum math starts to matter.** Quorum is `n - f` with `f = floor((n - 1) / 3)`: at n = 4 you tolerate one faulty node (quorum 3), at n = 3 quorum is 3 and you tolerate none. Pick n = 3f + 1 for the f you actually need — that is where `n - f` is also the minimum, `2f + 1`.
 
 4. **Every node needs the same `chainId`**, and two different deployments need two different ones. That is what stops one network's votes being counted by the other.
 
 Multi-node scenarios — leader crashes, partitions, membership churn — are exercised by the repo's internal `raijin-test-harness` package (`TestOrchestrator` + `PartitionableNetwork` + invariant checkers) rather than examples, because they're timing-sensitive by nature. Read the harness tests for working multi-node wiring.
+
+## Persistence and restarts
+
+`checkpoint?: CheckpointStore` (`{ load(): Promise<Uint8Array | null>; save(record): Promise<void> }`) makes a restarted validator resume from its last committed block instead of genesis. Pair it with a durable `store` (`PersistentStateStore` from `@johnhenry/raijin-core`):
+
+```ts
+const store = await PersistentStateStore.open(new IndexedDbKVBackend({ name: 'chain-state' }))
+const checkpoint = kvCheckpointStore(new IndexedDbKVBackend({ name: 'chain-checkpoint' }))
+const node = await ValidatorNode.create({ ..., store, checkpoint })
+```
+
+- On every finalized block the node saves `{ latestBlock, view }` (wire-codec encoded). On start (during `ready()`) it loads it, checks the block's `stateRoot` equals the store's root, and resumes block numbering, parent-hash linkage and consensus's chain tip from it.
+- Use a **separate** storage location from the state store; a shared key space would put the record inside the state root.
+- Ordering: transactions reach the state store before the checkpoint is written, so after a crash the store can be one block ahead of the checkpoint. A mismatch makes `ready()` reject with a clear error rather than guess; recover with `syncFrom`/`importSyncState` from a peer. A failed `save` does not halt finalization; see `node.checkpointError`.
+- The consensus *view* is recorded but not re-adopted (a view needs its signed justification); a restarted node rejoins the current view through the normal protocol or `importSyncState`.
+- `importSyncState` awaits `store.flush()` when the store has one, so synced state is durable before the node continues.
 
 ## Provenance
 

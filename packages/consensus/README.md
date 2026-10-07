@@ -123,7 +123,17 @@ Every node must construct its `ValidatorSet` with the **same keys in the same or
 
 ### Types
 
-`PBFTConfig`, `PBFTPhase`, `NetworkTransport` (`broadcast`/`send`/`onMessage`), `ConsensusTimer` + `TimerHandle` (`set`/`clear` — injectable for deterministic tests), and the message union `ConsensusMessage` = `PrePrepareMessage | PrepareMessage | CommitMessage | ViewChangeMessage | NewViewMessage`.
+`PBFTConfig`, `PBFTPhase`, `NetworkTransport` (`broadcast`/`send`/`onMessage`), `ConsensusTimer` + `TimerHandle` (`set`/`clear` — injectable for deterministic tests), and the message union `ConsensusMessage` = `PrePrepareMessage | PrepareMessage | CommitMessage | ViewChangeMessage | NewViewMessage | TxGossipMessage | GenesisRequestMessage | GenesisResponseMessage`.
+
+### Transports and the wire — `BytesTransport`, `codecTransport`, `encodeConsensusMessage`, `decodeConsensusMessage`
+
+`NetworkTransport` is typed over message **objects**, which carry `bigint` and `Uint8Array` and so cannot be `JSON.stringify`d. The contract:
+
+- **In-process transports** (tests, same-thread buses) may pass the objects straight through.
+- **Anything that crosses a process boundary** (WebSocket, WebRTC data channel, wsh stream) should implement the byte-level `BytesTransport` — `broadcast(bytes)`, `send(to, bytes)`, `onMessage((from, bytes) => ...)` — and be wrapped: `new ValidatorNode({ transport: codecTransport(myBytesTransport), ... })`. `codecTransport` encodes on send and decodes on receive with the canonical codec from `@johnhenry/raijin-core` (byte-level spec in its README). Payloads that fail to decode or are not consensus messages are dropped (report them via `codecTransport(inner, { onError })`); they never throw into your socket.
+- Either way `from` must be the **authenticated** peer key the transport established (e.g. from the handshake), never something read out of the payload. Consensus verifies every vote's signature against it. Delivery should be reliable and ordered per peer.
+
+`encodeConsensusMessage(msg): Uint8Array` / `decodeConsensusMessage(bytes): ConsensusMessage` are the same codec with a shape check (types, `bigint` views/sequences, `Uint8Array` digests/keys/signatures, well-formed `new-view`). They cover every member of `ConsensusMessage`, including `tx-gossip` and `genesis-request`/`genesis-response`. The test harness network is bytes-only and runs four validators through it.
 
 ### `voteDigest(vote: Vote)` / `NO_BLOCK_DIGEST`
 

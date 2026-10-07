@@ -6,7 +6,18 @@ import type { Block, Transaction, GenesisConfig } from '@johnhenry/raijin-core'
 
 // ── Network transport interface ───────────────────────────────────────
 
-/** Transport-agnostic message sending. Implement with WebRTC, WebSocket, etc. */
+/**
+ * Transport-agnostic message sending, typed over message OBJECTS.
+ *
+ * In-process transports can pass objects straight through. A transport that
+ * crosses a process boundary must not `JSON.stringify` them (`bigint` throws,
+ * `Uint8Array` is mangled): implement the byte-level `BytesTransport` and wrap
+ * it with `codecTransport(inner)`, which encodes/decodes at this boundary with
+ * the canonical codec (`encodeMessage`/`decodeMessage` in core).
+ *
+ * Whatever the transport, `onMessage`'s `from` must be the AUTHENTICATED peer
+ * key, never a value read from the payload.
+ */
 export interface NetworkTransport {
   /** Broadcast a message to all peers. */
   broadcast(message: ConsensusMessage): void

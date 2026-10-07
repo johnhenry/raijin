@@ -15,7 +15,7 @@ import {
   type GenesisConfig,
 } from '@johnhenry/raijin-core'
 import type { ConsensusTimer, NetworkTransport } from '@johnhenry/raijin-consensus'
-import { ValidatorNode, type GossipConfig } from '@johnhenry/raijin-validator'
+import { ValidatorNode, type GossipConfig, type CheckpointStore } from '@johnhenry/raijin-validator'
 import { mockSign } from '../../../consensus/test/helpers.js'
 
 
@@ -49,12 +49,16 @@ export interface RaijinTestNodeConfig {
   genesisHash?: Uint8Array
   /** Chain id (default 1n). */
   chainId?: bigint
+  /** State store (default: a fresh `InMemoryStateStore`). */
+  store?: StateStore
+  /** Durable chain-tip record (see `ValidatorNodeConfig.checkpoint`). */
+  checkpoint?: CheckpointStore
 }
 
 export class RaijinTestNode {
   readonly id: string
   readonly publicKey: Uint8Array
-  readonly store: InMemoryStateStore
+  readonly store: StateStore
   readonly node: ValidatorNode
 
   #running = false
@@ -63,7 +67,7 @@ export class RaijinTestNode {
   constructor(config: RaijinTestNodeConfig) {
     this.id = config.id
     this.publicKey = config.publicKey
-    this.store = new InMemoryStateStore()
+    this.store = config.store ?? new InMemoryStateStore()
 
     // `validators` is omitted when a genesis (which carries them) is given.
     this.node = new ValidatorNode({
@@ -82,6 +86,7 @@ export class RaijinTestNode {
       gossip: config.gossip,
       genesis: config.genesis,
       genesisHash: config.genesisHash,
+      checkpoint: config.checkpoint,
     })
 
     this.node.onBlockFinalized((block) => {
