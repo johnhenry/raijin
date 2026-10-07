@@ -23,6 +23,7 @@ import {
 } from '../../consensus/test/helpers.js'
 import { PartitionableNetwork } from './network/partitionable-network.js'
 import { SeededPRNG } from './network/seeded-prng.js'
+import type { GossipConfig } from '@johnhenry/raijin-validator'
 import { RaijinTestNode } from './nodes/raijin-test-node.js'
 import { ByzantineTestNode } from './nodes/byzantine-node.js'
 import { EventCollector } from './timeline/event-collector.js'
@@ -75,8 +76,10 @@ export class TestOrchestrator {
   /** Per-node view-change timeout override (see `addNode`'s `viewTimeout`
    *  option), applied both at `startAll()` and on any later restart. */
   #viewTimeouts = new Map<string, number>()
+  #gossip: GossipConfig | undefined
 
-  constructor(opts?: { seed?: number }) {
+  constructor(opts?: { seed?: number; gossip?: GossipConfig }) {
+    this.#gossip = opts?.gossip
     this.network = new PartitionableNetwork()
     this.timer = new MockTimer()
     if (opts?.seed !== undefined) {
@@ -156,6 +159,7 @@ export class TestOrchestrator {
           validators: validatorsCopy,
           blockTime: 2000,
           viewTimeout: this.#viewTimeouts.get(id),
+          gossip: this.#gossip,
         })
         this.nodes.set(id, node)
         this.events.record(id, 'lifecycle', 'node-added', {})
@@ -257,6 +261,7 @@ export class TestOrchestrator {
       validators: [...this.#validators],
       blockTime: 2000,
       viewTimeout: this.#viewTimeouts.get(id),
+          gossip: this.#gossip,
     })
 
     const peer = [...this.nodes.values()].find((n) => n.running)
@@ -305,6 +310,7 @@ export class TestOrchestrator {
       validators: [...this.#validators],
       blockTime: 2000,
       viewTimeout: this.#viewTimeouts.get(id),
+          gossip: this.#gossip,
     })
 
     this.nodes.set(id, newNode)

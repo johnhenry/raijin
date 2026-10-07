@@ -23,7 +23,7 @@ import { RaijinClient, Wallet } from '@johnhenry/raijin-sdk'
 
 // ── Real Ed25519 signature verification (Node 24+ / modern browsers) ──
 const ed25519Verifier = {
-  async verify(message, signature, publicKey) {
+  async verify(publicKey, signature, message) {
     try {
       const key = await globalThis.crypto.subtle.importKey(
         'raw', publicKey, { name: 'Ed25519' }, false, ['verify'],

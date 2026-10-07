@@ -130,7 +130,7 @@ export class StateMachine {
     const txHash = await hash(encodeTxSigned(tx))
 
     // 1. Verify signature
-    const valid = await this.#verifier.verify(txBytes, tx.signature, tx.from)
+    const valid = await this.#verifier.verify(tx.from, tx.signature, txBytes)
     if (!valid) {
       return { txHash, status: 'revert', revertReason: 'invalid signature', index }
     }

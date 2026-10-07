@@ -112,11 +112,15 @@ export interface StateSnapshot {
 }
 
 export interface SignatureVerifier {
-  /** Verify a signature against a message and public key */
+  /**
+   * Verify a signature. Argument order is WebCrypto's:
+   * `(publicKey, signature, message)` (changed in core 0.1.0; it used to be
+   * `(message, signature, publicKey)`).
+   */
   verify(
-    message: Uint8Array,
-    signature: Uint8Array,
     publicKey: Uint8Array,
+    signature: Uint8Array,
+    message: Uint8Array,
   ): Promise<boolean>
 }
 

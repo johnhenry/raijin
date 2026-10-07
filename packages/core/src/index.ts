@@ -51,7 +51,16 @@ export {
 } from './encoding.js'
 
 // Cryptography
-export { verifyEd25519, ed25519Verifier } from './crypto.js'
+export { verifyEd25519, signEd25519, ed25519Verifier } from './crypto.js'
+
+// Genesis
+export {
+  createGenesisBlock,
+  genesisHash,
+  applyGenesisState,
+  assertGenesisMatches,
+} from './genesis.js'
+export type { GenesisConfig, GenesisAccount } from './genesis.js'
 
 // Errors
 export {

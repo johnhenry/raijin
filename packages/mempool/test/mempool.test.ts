@@ -411,4 +411,21 @@ describe('Mempool', () => {
       expect(pool.has(tx)).toBe(true)
     })
   })
+
+  describe('hasCapacityFor', () => {
+    it('is true while there is room', async () => {
+      const small = new Mempool({ verifier: validVerifier, maxSize: 2 })
+      await small.submit(makeTx({ sender: 1, fee: 10n }))
+      expect(small.hasCapacityFor(makeTx({ sender: 2, fee: 1n }))).toBe(true)
+    })
+
+    it('when full, is true only for a strictly higher fee than the lowest pending', async () => {
+      const small = new Mempool({ verifier: validVerifier, maxSize: 2 })
+      await small.submit(makeTx({ sender: 1, fee: 20n }))
+      await small.submit(makeTx({ sender: 2, fee: 30n }))
+      expect(small.hasCapacityFor(makeTx({ sender: 3, fee: 10n }))).toBe(false)
+      expect(small.hasCapacityFor(makeTx({ sender: 3, fee: 20n }))).toBe(false)
+      expect(small.hasCapacityFor(makeTx({ sender: 3, fee: 21n }))).toBe(true)
+    })
+  })
 })

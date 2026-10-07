@@ -107,9 +107,9 @@ describe('Wallet', () => {
     expect(sigView).toEqual(sigStandalone)
 
     // The library verifies its own signature over the view...
-    expect(await verifyEd25519(view, sigView, wallet.publicKey)).toBe(true)
+    expect(await verifyEd25519(wallet.publicKey, sigView, view)).toBe(true)
     // ...and does NOT accept it over the 64-byte buffer it sits inside.
-    expect(await verifyEd25519(backing, sigView, wallet.publicKey)).toBe(false)
+    expect(await verifyEd25519(wallet.publicKey, sigView, backing)).toBe(false)
   })
 
   it('reimports a PKCS8 key held in a larger buffer', async () => {

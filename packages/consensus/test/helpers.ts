@@ -126,7 +126,7 @@ async function hmacKey(identity: Uint8Array): Promise<CryptoKey> {
 
 /** Verifier for the HMAC-based test signing scheme (see `mockSign`). */
 export const mockVerifier: SignatureVerifier = {
-  async verify(message: Uint8Array, signature: Uint8Array, publicKey: Uint8Array): Promise<boolean> {
+  async verify(publicKey: Uint8Array, signature: Uint8Array, message: Uint8Array): Promise<boolean> {
     try {
       const key = await hmacKey(publicKey)
       return await globalThis.crypto.subtle.verify(

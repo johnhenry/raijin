@@ -433,7 +433,12 @@ export class PBFTConsensus {
    * already finalized further on its own.
    */
   async seedFinalized(block: Block): Promise<void> {
-    if (block.header.number <= this.#lastFinalizedNumber) return
+    // Block 0 (genesis) is the one case where `number === lastFinalized`
+    // still has to take effect: a fresh node starts at number 0 with an
+    // all-zero hash, and seeding it with the real genesis hash is what makes
+    // block 1's `parentHash` check line up.
+    if (block.header.number < this.#lastFinalizedNumber) return
+    if (block.header.number === this.#lastFinalizedNumber && block.header.number !== 0n) return
     this.#lastFinalizedNumber = block.header.number
     this.#lastFinalizedHash = await blockHash(block)
   }
@@ -1318,9 +1323,9 @@ export class PBFTConsensus {
     signer: Uint8Array,
   ): Promise<boolean> {
     return this.#verify.verify(
-      await this.#voteBytes(phase, view, sequence, digest),
-      signature,
       signer,
+      signature,
+      await this.#voteBytes(phase, view, sequence, digest),
     )
   }
 }

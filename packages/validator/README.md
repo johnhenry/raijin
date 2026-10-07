@@ -61,7 +61,9 @@ With one validator the node is always leader: the block timer fires, `BlockProdu
 
 ### `ValidatorNode` / `ValidatorNodeConfig`
 
-Config: `chainId` (**required**, `bigint`), `identity` (`{ publicKey, sign, verify }`), `transport` (`NetworkTransport`), `timer` (`ConsensusTimer`), `store` (`StateStore`), plus optional `blockTime` (ms, default 2000), `validators` (default `[]` — see trap above), `maxTxPerBlock` (default 100), `maxMempoolSize` (default 4096).
+Config: `chainId` (**required**, `bigint`), `identity` (`{ publicKey, sign, verify }`), `transport` (`NetworkTransport`), `timer` (`ConsensusTimer`), `store` (`StateStore`), plus optional `blockTime` (ms, default 2000), `validators` (default `[]` — see trap above), `maxTxPerBlock` (default 100), `maxMempoolSize` (default 4096), `gossip`, `genesis`, `genesisHash` (below).
+
+**`identity.verify` argument order changed in 0.1.0** to `(publicKey, signature, message)` — see `@johnhenry/raijin-core`.
 
 `identity.verify` is used for two different jobs: the state machine and the mempool check transaction signatures with it, and consensus checks every PRE-PREPARE/PREPARE/COMMIT/VIEW-CHANGE vote with it. A verifier that returns `true` unconditionally therefore disables vote authentication as well as transaction validation.
 
@@ -75,6 +77,22 @@ Config: `chainId` (**required**, `bigint`), `identity` (`{ publicKey, sign, veri
 | `consensus` / `mempool` / `stateMachine` / `blockProducer` | The wired sub-components, exposed for advanced use (e.g. `node.stateMachine.getAccount(addr)`). |
 
 Block-production errors inside the timer loop are swallowed by design (not being leader or having an empty mempool is normal); drive `node.blockProducer.produceBlock()` manually if you need the error.
+
+#### Transaction gossip (default on)
+
+`gossip?: { enabled?: boolean, fanout?: number, maxHops?: number }` — `submitTransaction` also relays the tx to the other validators over the same `transport` (a `tx-gossip` message; `PBFTConsensus` ignores it), so a client can submit to **any** validator and whichever one leads will include it. Before this, only the node you submitted to knew about the tx.
+
+- **Dedupe:** by signed-tx hash (bounded FIFO seen-set) on top of the mempool's sender+nonce rule, so the relay storm terminates.
+- **Hops:** the originator sends at hop 1; a receiver relays (to everyone except the sender) only while `hops < maxHops`. Default `maxHops: 2`.
+- **Fanout:** default is `transport.broadcast`; with `fanout: k` each round goes to `k` random other validators via `send` (use with larger `maxHops`).
+- **Backpressure:** an inbound tx is dropped before signature verification when the pool is full and it cannot out-bid the lowest-fee pending tx (`Mempool.hasCapacityFor`), when more than 64 verifications are already in flight, or when its nonce is already consumed on-chain. Only txs the mempool actually accepted are relayed. Only validators' gossip is accepted.
+- `enabled: false` restores the old local-only behaviour. All nodes need a transport that carries `bigint`/`Uint8Array` (see below).
+
+#### Genesis
+
+`genesis?: GenesisConfig`, `genesisHash?: Uint8Array` (see `@johnhenry/raijin-core`). With `genesis`, every node derives the same block 0 from the config; a fresh store is seeded with the genesis accounts, `validators` come from the config (set one or the other; they must match), `genesis.chainId` must equal `chainId`, and the first block's `parentHash` is the genesis hash. `await node.ready()` (or `await ValidatorNode.create(config)`) surfaces a genesis problem: if `genesisHash` is given and the config does not hash to it the node **refuses to run** (`ready()` rejects, `start()` never starts consensus). A node whose genesis differs from the cluster's (and was not pinned) computes a different block 0, so it ignores the cluster's blocks (parent hash mismatch) and never finalizes anything.
+
+A node can also be started with **only** `genesisHash` (no `genesis`, no `validators`) and call `await node.fetchGenesis({ timeoutMs })`: it asks peers (`genesis-request`/`genesis-response` over the transport) and adopts the first response that hashes to the expected hash; others are ignored, and it rejects on timeout. **Trust model:** the hash (or the config) must be obtained out of band — a config file, release notes, an operator you trust. A peer cannot vouch for the genesis it serves, so there is no trustless bootstrap; fetching only saves you from distributing the full validator list and initial state, it does not remove the need to know the hash. Without `genesis` the node behaves as before (no block 0, first parent hash all zeros); all nodes of a chain must use the same mode.
 
 ### `BlockProducer` / `BlockProducerConfig`
 

@@ -12,9 +12,10 @@ import {
   type Transaction,
   type StateStore,
   type Block,
+  type GenesisConfig,
 } from '@johnhenry/raijin-core'
 import type { ConsensusTimer, NetworkTransport } from '@johnhenry/raijin-consensus'
-import { ValidatorNode } from '@johnhenry/raijin-validator'
+import { ValidatorNode, type GossipConfig } from '@johnhenry/raijin-validator'
 import { mockSign } from '../../../consensus/test/helpers.js'
 
 
@@ -26,7 +27,7 @@ export interface RaijinTestNodeConfig {
   /** Sign function (from mockSign). */
   sign: (message: Uint8Array) => Promise<Uint8Array>
   /** Signature verifier (from mockVerifier). */
-  verify: { verify(message: Uint8Array, signature: Uint8Array, publicKey: Uint8Array): Promise<boolean> }
+  verify: { verify(publicKey: Uint8Array, signature: Uint8Array, message: Uint8Array): Promise<boolean> }
   /** Network transport (from DeterministicNetwork.createTransport). */
   transport: NetworkTransport
   /** Shared MockTimer. */
@@ -40,6 +41,14 @@ export interface RaijinTestNodeConfig {
    *  that need to exercise a view change without waiting out a real 10s
    *  timeout on the mock clock. */
   viewTimeout?: number
+  /** Transaction gossip config (default: enabled). */
+  gossip?: GossipConfig
+  /** First-class genesis (see `ValidatorNodeConfig.genesis`). */
+  genesis?: GenesisConfig
+  /** Expected genesis hash (see `ValidatorNodeConfig.genesisHash`). */
+  genesisHash?: Uint8Array
+  /** Chain id (default 1n). */
+  chainId?: bigint
 }
 
 export class RaijinTestNode {
@@ -56,8 +65,9 @@ export class RaijinTestNode {
     this.publicKey = config.publicKey
     this.store = new InMemoryStateStore()
 
+    // `validators` is omitted when a genesis (which carries them) is given.
     this.node = new ValidatorNode({
-      chainId: 1n,
+      chainId: config.chainId ?? 1n,
       identity: {
         publicKey: config.publicKey,
         sign: config.sign,
@@ -66,9 +76,12 @@ export class RaijinTestNode {
       transport: config.transport,
       timer: config.timer,
       store: this.store,
-      validators: config.validators,
+      validators: config.genesis ? undefined : config.validators,
       blockTime: config.blockTime ?? 2000,
       viewTimeout: config.viewTimeout,
+      gossip: config.gossip,
+      genesis: config.genesis,
+      genesisHash: config.genesisHash,
     })
 
     this.node.onBlockFinalized((block) => {
