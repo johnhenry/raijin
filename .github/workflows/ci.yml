@@ -35,3 +35,6 @@ jobs:
       # they are timing-sensitive. See examples/README.md.
       - name: Examples smoke test
         run: npm run examples
+
+  workflow-lint:
+    uses: johnhenry/workflows/.github/workflows/workflow-lint.yml@v1
