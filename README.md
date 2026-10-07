@@ -263,6 +263,23 @@ npm run typecheck
 npm run clean
 ```
 
+## Releasing
+
+Releases use [Changesets](https://github.com/changesets/changesets); `main` is
+the release branch ([publish model](https://github.com/johnhenry/workflows#the-publish-model-main-is-the-release-branch)).
+
+1. In a PR that changes a published `@johnhenry/raijin-*` package, run
+   `npm run changeset` and commit the generated file in `.changeset/`.
+2. When the PR lands on `main`, `.github/workflows/publish.yml` opens or updates
+   a "chore: version packages" PR that applies the version bumps and changelogs.
+3. Merging that PR publishes every package whose version is not yet on npm
+   (`npm run release` = build + `changeset publish`, with provenance), and
+   pushes a git tag + GitHub Release per published package.
+
+Pushes to `main` with no pending changesets and no new versions publish nothing.
+`raijin-test-harness` is private and ignored by Changesets. Do not create tags
+or GitHub Releases by hand to cause a publish.
+
 ## Name
 
 Raijin (雷神) -- the Japanese god of lightning, thunder, and storms.
