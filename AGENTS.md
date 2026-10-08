@@ -125,22 +125,16 @@ accepted cost of that separation.
 
 ## Releases
 
-`npm run build && npm run test && npm run typecheck`, bump the affected
-packages' `version` fields (and every internal `^0.0.x` dependency range
-that depends on them, in the same change — see the CHANGELOG's `0.0.1`
-Housekeeping entry for why a version-only bump without the range bump
-installs the old, unfixed core alongside the new packages), add the root
-`CHANGELOG.md` entry, merge, then `gh release create v<version>` — the
-release event triggers `.github/workflows/publish.yml`.
-
-That workflow does **not** use `npm publish --workspaces` — it calls a
-`publish_if_new` function once per package, **in explicit dependency
-order** (`core`, `consensus`, `mempool`, `da`, `sdk`, `validator`), because
-`npm publish --workspaces` iterates alphabetically and `consensus` would
-try to publish before its `raijin-core@^0.0.x` dependency exists on the
-registry. Each call is individually guarded by an `npm view <name>@<version>`
-pre-flight check, so the workflow is safe to re-run (or trigger via
-`workflow_dispatch` to verify the token) even when nothing changed.
-`raijin-test-harness` has no `publish_if_new` call and is never published.
-Adding a new publishable package means adding its call **in the right
-position** in that dependency-ordered list, not appending it at the end.
+Releases use Changesets; main is the release branch (see "Releasing" in `README.md`).
+Add a changeset (`npm run changeset`) in the PR that changes a published package;
+merging it makes `.github/workflows/publish.yml` open/update the "chore: version
+packages" PR (needs `pull-requests: write` on the job **and** the repo setting "Allow
+GitHub Actions to create and approve pull requests"). Merging that PR runs
+`npm run release` (build + `changeset publish`, with provenance), which publishes every
+package whose version is not on npm yet, in dependency order, skips the rest, and
+creates the `<name>@<version>` tags; `changesets/action` then creates one GitHub
+Release per package. Never create a tag or `gh release create` by hand: nothing
+listens for it. Internal `^0.0.x` dependency ranges are bumped by `changeset version`
+(see the CHANGELOG's `0.0.1` Housekeeping entry for why a version-only bump without
+the range bump installs the old, unfixed core alongside the new packages).
+`raijin-test-harness` is private and never published.
