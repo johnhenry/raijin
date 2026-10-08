@@ -280,6 +280,19 @@ Pushes to `main` with no pending changesets and no new versions publish nothing.
 `raijin-test-harness` is private and ignored by Changesets. Do not create tags
 or GitHub Releases by hand to cause a publish.
 
+**One-time repository requirement.** `changesets/action` opens the Version Packages
+PR with `GITHUB_TOKEN`, which needs both `permissions: pull-requests: write` on the job
+(already set in the workflow) and the repo setting *Settings > Actions > General >
+"Allow GitHub Actions to create and approve pull requests"*. Without the setting the run
+fails at `creating pull request` ("GitHub Actions is not permitted to create or approve
+pull requests"). Check / enable:
+
+```bash
+gh api repos/johnhenry/raijin/actions/permissions/workflow
+gh api -X PUT repos/johnhenry/raijin/actions/permissions/workflow \
+  -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true
+```
+
 ## Name
 
 Raijin (雷神) -- the Japanese god of lightning, thunder, and storms.
